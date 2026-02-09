@@ -1,0 +1,33 @@
+# Build and IDE
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and local config (never commit secrets)
+logs/
+*.log
+appsettings.json
+appsettings.*.json
+!appsettings.example.json
+
+# NuGet
+*.nupkg
+.nuget/packages/
+project.lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# User-specific / env overrides
+*.local.json
+.env
+.env.*
