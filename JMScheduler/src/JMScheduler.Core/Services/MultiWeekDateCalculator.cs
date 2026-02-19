@@ -1,6 +1,6 @@
-using JMScheduler.Job.Models;
+using JMScheduler.Core.Models;
 
-namespace JMScheduler.Job.Services;
+namespace JMScheduler.Core.Services;
 
 /// <summary>
 /// Pure C# replacement for the SpanClientScheduleShift MySQL function (374 lines → ~80 lines).

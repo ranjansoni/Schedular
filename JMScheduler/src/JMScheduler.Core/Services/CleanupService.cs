@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using Dapper;
 using Microsoft.Extensions.Logging;
-using JMScheduler.Job.Configuration;
-using JMScheduler.Job.Infrastructure;
+using JMScheduler.Core.Configuration;
+using JMScheduler.Core.Infrastructure;
 
-namespace JMScheduler.Job.Services;
+namespace JMScheduler.Core.Services;
 
 /// <summary>
 /// Handles the cleanup phase of the scheduler job.

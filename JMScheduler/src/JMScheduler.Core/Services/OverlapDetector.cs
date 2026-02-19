@@ -1,6 +1,6 @@
-using JMScheduler.Job.Models;
+using JMScheduler.Core.Models;
 
-namespace JMScheduler.Job.Services;
+namespace JMScheduler.Core.Services;
 
 /// <summary>
 /// In-memory overlap detection engine for employee shift conflicts.

@@ -1,4 +1,4 @@
-namespace JMScheduler.Job.Configuration;
+namespace JMScheduler.Core.Configuration;
 
 /// <summary>
 /// Configuration settings for the scheduler job, bound from appsettings.json "Scheduler" section.

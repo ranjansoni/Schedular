@@ -1,4 +1,4 @@
-namespace JMScheduler.Job.Models;
+namespace JMScheduler.Core.Models;
 
 /// <summary>
 /// A single row in the job_shift_audit_log table.

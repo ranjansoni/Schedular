@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
-using JMScheduler.Job.Configuration;
-using JMScheduler.Job.Data;
-using JMScheduler.Job.Infrastructure;
-using JMScheduler.Job.Models;
+using JMScheduler.Core.Configuration;
+using JMScheduler.Core.Data;
+using JMScheduler.Core.Infrastructure;
+using JMScheduler.Core.Models;
 
-namespace JMScheduler.Job.Services;
+namespace JMScheduler.Core.Services;
 
 /// <summary>
 /// Processes monthly recurring schedule models (RecurringType = 1).
@@ -97,22 +97,24 @@ public sealed class MonthlyScheduleService
         OverlapDetector overlapDetector,
         List<ShiftAuditEntry> auditEntries,
         List<ShiftConflict> conflicts,
+        int effectiveMonthlyMonths,
+        int companyId,
+        int modelId,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         var result = new MonthlyResult();
 
         _logger.LogInformation("=== Monthly processing starting for {MonthsAhead} months ===",
-            _config.MonthlyMonthsAhead);
+            effectiveMonthlyMonths);
 
         // Process each month in the window
-        for (int monthOffset = 0; monthOffset < _config.MonthlyMonthsAhead; monthOffset++)
+        for (int monthOffset = 0; monthOffset < effectiveMonthlyMonths; monthOffset++)
         {
             var targetMonth = scheduleDate.AddMonths(monthOffset);
             _logger.LogInformation("Processing monthly models for {Month:yyyy-MM}", targetMonth);
 
-            // Load models eligible for this specific month
-            var models = await _repo.LoadMonthlyModelsAsync(targetMonth, ct);
+            var models = await _repo.LoadMonthlyModelsAsync(targetMonth, ct, companyId, modelId);
 
             if (models.Count == 0)
             {

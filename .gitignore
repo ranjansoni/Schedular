@@ -34,6 +34,7 @@ Thumbs.db
 
 # Compiled publish output — copy to server separately, never commit binaries
 publish/
+publish-api/
 
 # Other codebases referenced locally for investigation only — not part of this repo
 JM Portal Code/

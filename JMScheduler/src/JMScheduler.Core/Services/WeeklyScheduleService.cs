@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
-using JMScheduler.Job.Configuration;
-using JMScheduler.Job.Data;
-using JMScheduler.Job.Infrastructure;
-using JMScheduler.Job.Models;
+using JMScheduler.Core.Configuration;
+using JMScheduler.Core.Data;
+using JMScheduler.Core.Infrastructure;
+using JMScheduler.Core.Models;
 
-namespace JMScheduler.Job.Services;
+namespace JMScheduler.Core.Services;
 
 /// <summary>
 /// Processes weekly (RecurringType=0) and multi-week (RecurringOn > 1) schedule models.
@@ -92,6 +92,7 @@ public sealed class WeeklyScheduleService
         OverlapDetector overlapDetector,
         List<ShiftAuditEntry> auditEntries,
         List<ShiftConflict> conflicts,
+        int effectiveAdvanceDays,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -99,14 +100,14 @@ public sealed class WeeklyScheduleService
 
         _logger.LogInformation(
             "=== Weekly processing starting: {ModelCount} models, {AdvanceDays} days ===",
-            models.Count, _config.AdvanceDays);
+            models.Count, effectiveAdvanceDays);
 
         // Pre-compute multi-week valid dates for all multi-week models (in-memory)
         var multiWeekValidDates = await PrecomputeMultiWeekDatesAsync(
-            models.Where(m => m.IsMultiWeek).ToList(), multiWeekTracking, ct);
+            models.Where(m => m.IsMultiWeek).ToList(), multiWeekTracking, effectiveAdvanceDays, ct);
 
         // Process each day in the advance window
-        for (int dayOffset = 0; dayOffset <= _config.AdvanceDays; dayOffset++)
+        for (int dayOffset = 0; dayOffset <= effectiveAdvanceDays; dayOffset++)
         {
             var targetDate = scheduleDateTime.AddDays(dayOffset);
             var dayOfWeek = targetDate.DayOfWeek;
@@ -295,12 +296,12 @@ public sealed class WeeklyScheduleService
                 result.TotalShiftsCreated += slowInserted;
             }
 
-            if ((dayOffset + 1) % 5 == 0 || dayOffset == _config.AdvanceDays || dayOffset == 0)
+            if ((dayOffset + 1) % 5 == 0 || dayOffset == effectiveAdvanceDays || dayOffset == 0)
             {
                 _logger.LogInformation(
                     "Weekly day {DayOffset}/{Total}: {Date:yyyy-MM-dd} ({DayOfWeek}) — " +
                     "eligible={Eligible}, fast={Fast}, scanArea={ScanArea}, claims={Claims}, groups={Groups}",
-                    dayOffset, _config.AdvanceDays, targetDate, dayOfWeek,
+                    dayOffset, effectiveAdvanceDays, targetDate, dayOfWeek,
                     eligibleModels.Count, fastPathShifts.Count, scanAreaShifts.Count,
                     claimsShifts.Count, groupModels.Count);
             }
@@ -327,6 +328,7 @@ public sealed class WeeklyScheduleService
     private async Task<Dictionary<int, HashSet<DateTime>>> PrecomputeMultiWeekDatesAsync(
         List<ScheduleModel> multiWeekModels,
         Dictionary<int, NextRunStatus> tracking,
+        int effectiveAdvanceDays,
         CancellationToken ct)
     {
         var result = new Dictionary<int, HashSet<DateTime>>();
@@ -356,7 +358,7 @@ public sealed class WeeklyScheduleService
                 model, trackingStatus, lastShiftDate, lastHistoryDate);
 
             var validDates = _multiWeekCalc.CalculateValidDates(
-                model, anchorDate, restrictionDate, _config.AdvanceDays);
+                model, anchorDate, restrictionDate, effectiveAdvanceDays);
 
             result[model.Id] = validDates;
 

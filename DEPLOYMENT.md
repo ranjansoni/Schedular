@@ -118,6 +118,110 @@
 
 ---
 
+---
+
+# Deploying JMScheduler API on IIS
+
+## 1. Build and Publish the API
+
+From the repo root:
+```cmd
+cd JMScheduler
+dotnet publish src\JMScheduler.Api\JMScheduler.Api.csproj -c Release -o C:\Apps\JMSchedulerApi
+```
+
+## 2. Configure
+
+1. Create or edit `appsettings.json` in `C:\Apps\JMSchedulerApi`:
+   ```json
+   {
+     "ConnectionStrings": {
+       "SchedulerDb": "Server=YOUR_RDS_HOST;Port=3306;Database=janitorialmgr;User Id=YOUR_USER;Password=YOUR_PASSWORD;SslMode=Required;"
+     },
+     "ApiKey": "YOUR_STRONG_RANDOM_API_KEY",
+     "Scheduler": {
+       "AdvanceDays": 45,
+       "MonthlyMonthsAhead": 3
+     }
+   }
+   ```
+2. Ensure `logs\` folder exists or can be created by the IIS app pool identity.
+
+## 3. Set Up IIS Site
+
+1. Install the **.NET 8 Hosting Bundle** on the server: https://dotnet.microsoft.com/download/dotnet/8.0 (choose "Hosting Bundle").
+2. Open IIS Manager, create a new site (or application under an existing site):
+   - **Physical path:** `C:\Apps\JMSchedulerApi`
+   - **Binding:** choose your port (e.g. 5050 or 80/443 with a hostname).
+3. Set the **Application Pool** to "No Managed Code" (the .NET Core module handles it).
+4. The included `web.config` uses InProcess hosting. If you need OutOfProcess, edit `hostingModel`.
+5. Browse to `http://yourserver:5050/api/scheduler/status` — you should see `{"status":"healthy",...}`.
+
+## 4. API Endpoints
+
+### Health Check (no auth required)
+```
+GET /api/scheduler/status
+```
+
+### Run Scheduler (requires X-Api-Key header)
+```
+POST /api/scheduler/run
+Content-Type: application/json
+X-Api-Key: YOUR_API_KEY
+
+{
+  "companyId": 0,
+  "modelId": 0,
+  "advanceDays": 45,
+  "monthlyMonthsAhead": 3
+}
+```
+
+All fields are optional. Omit or pass 0 to use defaults.
+
+**Examples:**
+- Run all companies, 45 days: `{"advanceDays": 45}`
+- Run specific company, 90 days: `{"companyId": 123, "advanceDays": 90}`
+- Run specific model, 365 days: `{"modelId": 456, "advanceDays": 365}`
+
+### Response (200 OK)
+```json
+{
+  "runId": "guid",
+  "status": "Completed",
+  "shiftsCreated": 27000,
+  "duplicatesSkipped": 5000,
+  "overlapsBlocked": 12,
+  "orphanedDeleted": 0,
+  "resetDeleted": 0,
+  "weeklyModelsLoaded": 3200,
+  "auditEntries": 32000,
+  "conflicts": 12,
+  "durationSeconds": 45,
+  "errorMessage": null
+}
+```
+
+### Error Responses
+- **401 Unauthorized:** Missing or invalid `X-Api-Key` header.
+- **409 Conflict:** Another scheduler run is already in progress.
+- **500 Internal Server Error:** Unexpected failure (check logs).
+
+## 5. Calling from Crontab
+
+Using crontab.org or any HTTP scheduling service:
+```bash
+curl -X POST https://yourserver/api/scheduler/run \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: YOUR_API_KEY" \
+  -d '{"advanceDays": 45}'
+```
+
+Schedule this to run daily (e.g. 2:00 AM EST).
+
+---
+
 ## 7. Troubleshooting
 
 - **“Missing appsettings.json”:** Ensure `appsettings.json` exists in the same folder as `JMScheduler.Job.exe` (or the DLL when using `dotnet`). Copy from `appsettings.example.json` and fill in values.

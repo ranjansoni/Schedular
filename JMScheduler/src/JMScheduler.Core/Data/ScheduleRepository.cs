@@ -2,11 +2,11 @@ using System.Text;
 using Dapper;
 using MySqlConnector;
 using Microsoft.Extensions.Logging;
-using JMScheduler.Job.Configuration;
-using JMScheduler.Job.Infrastructure;
-using JMScheduler.Job.Models;
+using JMScheduler.Core.Configuration;
+using JMScheduler.Core.Infrastructure;
+using JMScheduler.Core.Models;
 
-namespace JMScheduler.Job.Data;
+namespace JMScheduler.Core.Data;
 
 /// <summary>
 /// All database access for the scheduler job. Encapsulates the queries
@@ -47,9 +47,10 @@ public sealed class ScheduleRepository
     /// Joins clientdetail + companydetail to ensure both the client and company are active.
     /// </summary>
     public async Task<List<ScheduleModel>> LoadWeeklyModelsAsync(
-        DateTime scheduleDateTime, CancellationToken ct)
+        DateTime scheduleDateTime, CancellationToken ct,
+        int companyId = 0, int modelId = 0)
     {
-        const string sql = @"
+        var sql = @"
             SELECT
                 csm.Id, csm.employeeid AS EmployeeId, csm.Client_id,
                 csm.startdate AS StartDate, csm.enddate AS EndDate,
@@ -93,9 +94,15 @@ public sealed class ScheduleRepository
               AND (csm.enddate = '0001-01-01' OR DATE(csm.enddate) >= DATE(@ScheduleDate))
               AND (csm.lastrundate = '0001-01-01' OR DATE(csm.lastrundate) < CURDATE())";
 
+        if (companyId > 0)
+            sql += " AND csm.CompanyID = @CompanyId";
+        if (modelId > 0)
+            sql += " AND csm.Id = @ModelId";
+
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);
         var models = await conn.QueryAsync<ScheduleModel>(
-            sql, new { ScheduleDate = scheduleDateTime }, commandTimeout: 300);
+            sql, new { ScheduleDate = scheduleDateTime, CompanyId = companyId, ModelId = modelId },
+            commandTimeout: 300);
 
         var result = models.ToList();
         _logger.LogInformation("Loaded {Count} weekly/multi-week models (RecurringType=0)", result.Count);
@@ -108,9 +115,10 @@ public sealed class ScheduleRepository
     /// Mirrors: MonthlySchedular.sql lines 65-70 WHERE clause.
     /// </summary>
     public async Task<List<ScheduleModel>> LoadMonthlyModelsAsync(
-        DateTime scheduleDate, CancellationToken ct)
+        DateTime scheduleDate, CancellationToken ct,
+        int companyId = 0, int modelId = 0)
     {
-        const string sql = @"
+        var sql = @"
             SELECT
                 csm.Id, csm.employeeid AS EmployeeId, csm.Client_id,
                 csm.startdate AS StartDate, csm.enddate AS EndDate,
@@ -156,9 +164,15 @@ public sealed class ScheduleRepository
               AND (csm.lastrundate IS NULL
                    OR DATE(csm.lastrundate) <= LAST_DAY(@ScheduleDate))";
 
+        if (companyId > 0)
+            sql += " AND csm.CompanyID = @CompanyId";
+        if (modelId > 0)
+            sql += " AND csm.Id = @ModelId";
+
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);
         var models = await conn.QueryAsync<ScheduleModel>(
-            sql, new { ScheduleDate = scheduleDate }, commandTimeout: 300);
+            sql, new { ScheduleDate = scheduleDate, CompanyId = companyId, ModelId = modelId },
+            commandTimeout: 300);
 
         var result = models.ToList();
         _logger.LogInformation("Loaded {Count} monthly models (RecurringType=1) for {Date:yyyy-MM}",

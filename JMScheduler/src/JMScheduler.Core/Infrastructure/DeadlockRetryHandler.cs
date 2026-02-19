@@ -1,8 +1,8 @@
 using MySqlConnector;
 using Microsoft.Extensions.Logging;
-using JMScheduler.Job.Configuration;
+using JMScheduler.Core.Configuration;
 
-namespace JMScheduler.Job.Infrastructure;
+namespace JMScheduler.Core.Infrastructure;
 
 /// <summary>
 /// Wraps database operations with automatic retry for transient MySQL errors.

@@ -1,4 +1,4 @@
-namespace JMScheduler.Job.Models;
+namespace JMScheduler.Core.Models;
 
 /// <summary>
 /// Represents a shift to be inserted into clientscheduleshift.

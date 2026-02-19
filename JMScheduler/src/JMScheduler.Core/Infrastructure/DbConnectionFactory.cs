@@ -1,6 +1,6 @@
 using MySqlConnector;
 
-namespace JMScheduler.Job.Infrastructure;
+namespace JMScheduler.Core.Infrastructure;
 
 /// <summary>
 /// Creates MySQL connections with consistent session settings

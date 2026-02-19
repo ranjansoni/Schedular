@@ -1,4 +1,4 @@
-namespace JMScheduler.Job.Models;
+namespace JMScheduler.Core.Models;
 
 /// <summary>
 /// Represents a row from clientschedulemodel — the "template" that defines
