@@ -22,8 +22,10 @@ public sealed class SchedulerController : ControllerBase
 
     /// <summary>
     /// Trigger a scheduler run with optional filters.
-    /// Returns 409 Conflict if another run is already in progress (in-process guard).
-    /// The DB-level StartEvent concurrency guard is also still active.
+    ///
+    /// Routing logic:
+    ///   - ModelId > 0  → lean single-model path (no lock, no audit, concurrent-safe)
+    ///   - ModelId == 0 → full batch path (in-process lock + DB concurrency guard)
     /// </summary>
     [HttpPost("run")]
     [ProducesResponseType(typeof(SchedulerRunResponse), StatusCodes.Status200OK)]
@@ -32,51 +34,40 @@ public sealed class SchedulerController : ControllerBase
     {
         request ??= new SchedulerRunRequest();
 
-        lock (_lock)
+        if (request.Reset && request.ModelId <= 0)
         {
-            if (_isRunning)
-            {
-                _logger.LogWarning("Scheduler run rejected — another run is already in progress");
-                return Conflict(new { error = "A scheduler run is already in progress. Try again later." });
-            }
-            _isRunning = true;
+            return BadRequest(new { error = "Reset requires a ModelId. Pass modelId > 0 when using reset." });
         }
+
+        // ---- Single-model lean path: no lock, no batch overhead ----
+        if (request.ModelId > 0)
+        {
+            return await RunSingleModel(request, ct);
+        }
+
+        // ---- Full batch path: in-process lock + DB concurrency ----
+        return await RunBatch(request, ct);
+    }
+
+    private async Task<IActionResult> RunSingleModel(SchedulerRunRequest request, CancellationToken ct)
+    {
+        _logger.LogInformation(
+            "API single-model run: ModelId={ModelId}, Reset={Reset}, AdvanceDays={AdvanceDays}, MonthlyMonths={Monthly}",
+            request.ModelId, request.Reset, request.AdvanceDays, request.MonthlyMonthsAhead);
 
         try
         {
-            _logger.LogInformation(
-                "API scheduler run starting: CompanyId={CompanyId}, ModelId={ModelId}, " +
-                "AdvanceDays={AdvanceDays}, MonthlyMonthsAhead={MonthlyMonthsAhead}",
-                request.CompanyId, request.ModelId, request.AdvanceDays, request.MonthlyMonthsAhead);
+            var result = await _schedulerJob.RunSingleModelAsync(
+                request.ModelId,
+                request.Reset,
+                request.AdvanceDays,
+                request.MonthlyMonthsAhead,
+                ct);
 
-            var result = await _schedulerJob.RunAsync(
-                DateTime.Now,
-                companyId: request.CompanyId,
-                modelId: request.ModelId,
-                advanceDaysOverride: request.AdvanceDays,
-                monthlyMonthsAheadOverride: request.MonthlyMonthsAhead,
-                ct: ct);
+            var response = MapResponse(result);
 
-            var response = new SchedulerRunResponse
-            {
-                RunId = result.RunId,
-                Status = result.Status,
-                ShiftsCreated = result.ShiftsCreated,
-                DuplicatesSkipped = result.DuplicatesSkipped,
-                OverlapsBlocked = result.OverlapsBlocked,
-                OrphanedDeleted = result.OrphanedDeleted,
-                ResetDeleted = result.ResetDeleted,
-                WeeklyModelsLoaded = result.WeeklyModelsLoaded,
-                AuditEntries = result.AuditEntries,
-                Conflicts = result.Conflicts,
-                DurationSeconds = result.DurationSeconds,
-                ErrorMessage = result.ErrorMessage
-            };
-
-            if (result.Status == "Blocked")
-            {
-                return Conflict(response);
-            }
+            if (result.Status == "NotFound")
+                return NotFound(response);
 
             return Ok(response);
         }
@@ -86,7 +77,51 @@ public sealed class SchedulerController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Scheduler run failed with exception");
+            _logger.LogError(ex, "Single-model run failed for ModelId={ModelId}", request.ModelId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    private async Task<IActionResult> RunBatch(SchedulerRunRequest request, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            if (_isRunning)
+            {
+                _logger.LogWarning("Scheduler batch run rejected — another run is already in progress");
+                return Conflict(new { error = "A scheduler run is already in progress. Try again later." });
+            }
+            _isRunning = true;
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "API batch run starting: CompanyId={CompanyId}, AdvanceDays={AdvanceDays}, " +
+                "MonthlyMonthsAhead={MonthlyMonthsAhead}",
+                request.CompanyId, request.AdvanceDays, request.MonthlyMonthsAhead);
+
+            var result = await _schedulerJob.RunAsync(
+                DateTime.Now,
+                companyId: request.CompanyId,
+                advanceDaysOverride: request.AdvanceDays,
+                monthlyMonthsAheadOverride: request.MonthlyMonthsAhead,
+                ct: ct);
+
+            var response = MapResponse(result);
+
+            if (result.Status == "Blocked")
+                return Conflict(response);
+
+            return Ok(response);
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499, new { error = "Request was cancelled by the client." });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Scheduler batch run failed");
             return StatusCode(500, new { error = ex.Message });
         }
         finally
@@ -97,6 +132,23 @@ public sealed class SchedulerController : ControllerBase
             }
         }
     }
+
+    private static SchedulerRunResponse MapResponse(SchedulerJob.RunResult result) => new()
+    {
+        RunId = result.RunId,
+        Status = result.Status,
+        ShiftsCreated = result.ShiftsCreated,
+        DuplicatesSkipped = result.DuplicatesSkipped,
+        OverlapsBlocked = result.OverlapsBlocked,
+        OrphanedDeleted = result.OrphanedDeleted,
+        ResetDeleted = result.ResetDeleted,
+        ResetShiftsDeleted = result.ResetShiftsDeleted,
+        WeeklyModelsLoaded = result.WeeklyModelsLoaded,
+        AuditEntries = result.AuditEntries,
+        Conflicts = result.Conflicts,
+        DurationSeconds = result.DurationSeconds,
+        ErrorMessage = result.ErrorMessage
+    };
 
     /// <summary>
     /// Health/status check — no authentication required.

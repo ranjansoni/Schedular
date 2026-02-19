@@ -30,6 +30,7 @@ public sealed class SchedulerJob
     private readonly CleanupService _cleanupService;
     private readonly WeeklyScheduleService _weeklyService;
     private readonly MonthlyScheduleService _monthlyService;
+    private readonly MultiWeekDateCalculator _multiWeekCalc;
     private readonly SchedulerConfig _config;
     private readonly ILogger<SchedulerJob> _logger;
 
@@ -38,6 +39,7 @@ public sealed class SchedulerJob
         CleanupService cleanupService,
         WeeklyScheduleService weeklyService,
         MonthlyScheduleService monthlyService,
+        MultiWeekDateCalculator multiWeekCalc,
         SchedulerConfig config,
         ILogger<SchedulerJob> logger)
     {
@@ -45,6 +47,7 @@ public sealed class SchedulerJob
         _cleanupService  = cleanupService;
         _weeklyService   = weeklyService;
         _monthlyService  = monthlyService;
+        _multiWeekCalc   = multiWeekCalc;
         _config          = config;
         _logger          = logger;
     }
@@ -61,11 +64,341 @@ public sealed class SchedulerJob
         public int OverlapsBlocked { get; set; }
         public int OrphanedDeleted { get; set; }
         public int ResetDeleted { get; set; }
+        public int ResetShiftsDeleted { get; set; }
         public int WeeklyModelsLoaded { get; set; }
         public int AuditEntries { get; set; }
         public int Conflicts { get; set; }
         public int DurationSeconds { get; set; }
         public string? ErrorMessage { get; set; }
+    }
+
+    // ========================================================================
+    // LEAN SINGLE-MODEL PATH
+    // Called by the portal for real-time model changes. No audit log, no
+    // concurrency guard, no cleanup, no overlap detection. Just:
+    //   1. Load the one model
+    //   2. Optionally delete future unlinked shifts (reset)
+    //   3. Generate new shifts
+    //   4. Insert shifts (+ scan areas / claims / groups)
+    //   5. Update lastrundate
+    // ========================================================================
+
+    /// <summary>
+    /// Fast, targeted run for a single model. Designed for portal on-demand calls
+    /// when a user adds or edits a model. Skips all batch overhead.
+    /// </summary>
+    public async Task<RunResult> RunSingleModelAsync(
+        int modelId,
+        bool reset,
+        int advanceDaysOverride = 0,
+        int monthlyMonthsAheadOverride = 0,
+        CancellationToken ct = default)
+    {
+        var sw = Stopwatch.StartNew();
+        var sessionId = $"single-{modelId}-{DateTime.Now:yyyyMMddHHmmss}";
+
+        int effectiveAdvanceDays = advanceDaysOverride > 0 ? advanceDaysOverride : _config.AdvanceDays;
+        int effectiveMonthlyMonths = monthlyMonthsAheadOverride > 0 ? monthlyMonthsAheadOverride : _config.MonthlyMonthsAhead;
+
+        _logger.LogInformation(
+            "RunSingleModel starting: ModelId={ModelId}, Reset={Reset}, AdvanceDays={Days}, MonthlyMonths={Months}",
+            modelId, reset, effectiveAdvanceDays, effectiveMonthlyMonths);
+
+        int resetShiftsDeleted = 0;
+        int shiftsCreated = 0;
+        int duplicatesSkipped = 0;
+
+        try
+        {
+            // 1. Load the model (no lastrundate filter — this is on-demand)
+            var model = await _repo.LoadModelByIdAsync(modelId, ct);
+            if (model == null)
+            {
+                _logger.LogWarning("RunSingleModel: ModelId={ModelId} not found or inactive", modelId);
+                return new RunResult
+                {
+                    RunId = sessionId,
+                    Status = "NotFound",
+                    ErrorMessage = $"Model {modelId} not found, inactive, or its client/company is inactive.",
+                    DurationSeconds = (int)sw.Elapsed.TotalSeconds
+                };
+            }
+
+            _logger.LogInformation(
+                "Loaded model {ModelId}: RecurringType={Type}, Client={Client}, Employee={Emp}, Group={Group}",
+                model.Id, model.RecurringType, model.Client_id, model.EmployeeId, model.GroupScheduleId);
+
+            // 2. Reset: delete future unlinked shifts
+            if (reset)
+            {
+                resetShiftsDeleted = await _repo.DeleteFutureShiftsForModelAsync(modelId, ct);
+                _logger.LogInformation("Reset: deleted {Count} future shifts for ModelId={ModelId}",
+                    resetShiftsDeleted, modelId);
+            }
+
+            // 3. Load scoped dedup keys (client-scoped is tiny compared to global)
+            var now = DateTime.Now;
+            var endDate = model.RecurringType == 1
+                ? now.AddMonths(effectiveMonthlyMonths).AddDays(1)
+                : now.AddDays(effectiveAdvanceDays + 1);
+
+            var existingKeys = await _repo.LoadExistingShiftKeysForClientAsync(model.Client_id, now, endDate, ct);
+            var existingModalKeys = await _repo.LoadExistingModalShiftKeysForModelAsync(modelId, now, endDate, ct);
+
+            _logger.LogInformation("Loaded scoped keys: standard={Std}, modal={Modal}",
+                existingKeys.Count, existingModalKeys.Count);
+
+            // 4. Check scan areas / claims for this model
+            bool hasScanAreas = await _repo.HasScanAreasAsync(modelId, ct);
+            bool hasClaims = await _repo.HasClaimsAsync(modelId, ct);
+            bool hasGroup = model.HasGroupSchedule;
+
+            // 5. Generate + insert shifts based on recurring type
+            if (model.RecurringType == 0)
+            {
+                // === WEEKLY (including multi-week) ===
+                string noteText = "Scheduled Event";
+
+                HashSet<DateTime>? multiWeekValidDates = null;
+                if (model.IsMultiWeek)
+                {
+                    var ids = new List<int> { modelId };
+                    var lastShiftDates = await _repo.GetLastShiftDatesForModelsAsync(ids, ct);
+                    var lastHistoryDates = await _repo.GetLastHistoryDatesForModelsAsync(ids, ct);
+                    var tracking = await _repo.LoadMultiWeekTrackingAsync(ct);
+                    tracking.TryGetValue(modelId, out var trackStatus);
+
+                    DateTime? lastShift = lastShiftDates.TryGetValue(modelId, out var sd) ? sd : null;
+                    DateTime? lastHistory = lastHistoryDates.TryGetValue(modelId, out var hd) ? hd : null;
+
+                    var (anchor, restriction) = _multiWeekCalc.ResolveAnchorAndRestriction(
+                        model, trackStatus, lastShift, lastHistory);
+                    multiWeekValidDates = _multiWeekCalc.CalculateValidDates(
+                        model, anchor, restriction, effectiveAdvanceDays);
+
+                    _logger.LogInformation("Multi-week model: {Count} valid dates computed", multiWeekValidDates.Count);
+                }
+
+                var fastPathShifts = new List<ScheduleShift>();
+                var scanAreaShifts = new List<ScheduleShift>();
+                var claimsShifts = new List<ScheduleShift>();
+                var groupDates = new List<DateTime>();
+
+                for (int dayOffset = 0; dayOffset <= effectiveAdvanceDays; dayOffset++)
+                {
+                    var targetDate = now.Date.AddDays(dayOffset);
+
+                    if (!model.IsScheduledForDay(targetDate.DayOfWeek)) continue;
+                    if (model.StartDate.Date > now.Date) continue;
+                    if (!model.HasNoEndDate && model.EndDate.Date < targetDate.Date) continue;
+
+                    if (model.IsMultiWeek && multiWeekValidDates != null
+                        && !multiWeekValidDates.Contains(targetDate.Date))
+                        continue;
+
+                    var shift = ScheduleShift.FromModel(model, targetDate, noteText);
+                    var key = shift.GetDuplicateKey();
+                    var modalKey = shift.GetModalDuplicateKey();
+
+                    bool isDuplicate = model.ScheduleType == 1
+                        ? existingModalKeys.Contains(modalKey)
+                        : existingKeys.Contains(key);
+
+                    if (isDuplicate)
+                    {
+                        duplicatesSkipped++;
+                        continue;
+                    }
+
+                    existingKeys.Add(key);
+                    existingModalKeys.Add(modalKey);
+
+                    if (hasGroup)
+                    {
+                        groupDates.Add(targetDate);
+                    }
+                    else if (hasClaims)
+                    {
+                        claimsShifts.Add(shift);
+                    }
+                    else if (hasScanAreas)
+                    {
+                        scanAreaShifts.Add(shift);
+                    }
+                    else
+                    {
+                        fastPathShifts.Add(shift);
+                    }
+                }
+
+                // Insert fast-path shifts
+                if (fastPathShifts.Count > 0)
+                {
+                    shiftsCreated += await _repo.BulkInsertShiftsAsync(fastPathShifts, ct);
+                }
+
+                // Insert scan-area shifts + copy scan areas
+                if (scanAreaShifts.Count > 0)
+                {
+                    shiftsCreated += await _repo.BulkInsertShiftsAsync(scanAreaShifts, ct);
+                    foreach (var shift in scanAreaShifts)
+                        await _repo.BulkCopyScanAreasAsync(new List<int> { modelId }, shift.DateTimeIn.Date, ct);
+                }
+
+                // Insert claims shifts + copy claims + optional scan areas
+                if (claimsShifts.Count > 0)
+                {
+                    shiftsCreated += await _repo.BulkInsertShiftsAsync(claimsShifts, ct);
+                    foreach (var shift in claimsShifts)
+                    {
+                        await _repo.BulkCopyClaimsAsync(new List<int> { modelId }, shift.DateTimeIn.Date, ct);
+                        if (hasScanAreas)
+                            await _repo.BulkCopyScanAreasAsync(new List<int> { modelId }, shift.DateTimeIn.Date, ct);
+                    }
+                }
+
+                // Insert group shifts (individual path — needs LAST_INSERT_ID for group clone)
+                foreach (var targetDate in groupDates)
+                {
+                    await using var conn = await _repo.CreateConnectionAsync(ct);
+                    int newGroupId = await _repo.CloneGroupScheduleAsync(conn, model.GroupScheduleId, ct);
+                    var insertedIds = await _repo.InsertGroupShiftsAsync(
+                        conn, model.GroupScheduleId, newGroupId, targetDate, noteText,
+                        existingKeys, existingModalKeys, ct);
+                    shiftsCreated += insertedIds.Count;
+                }
+
+                // Update lastrundate
+                await _repo.UpdateSingleModelLastRunDateAsync(modelId, ct);
+
+                // Finalize multi-week tracking if needed
+                if (model.IsMultiWeek && shiftsCreated > 0)
+                {
+                    var lastShiftDate = await _repo.GetLastShiftDateForModelAsync(modelId, ct);
+                    if (lastShiftDate.HasValue)
+                        await _repo.FinalizeMultiWeekTrackingAsync(modelId, lastShiftDate.Value, ct);
+                }
+            }
+            else if (model.RecurringType == 1)
+            {
+                // === MONTHLY ===
+                string noteText = "Schedule Event Monthly";
+
+                DayOfWeek? scheduledDay = GetScheduledDayOfWeek(model);
+                if (scheduledDay == null)
+                {
+                    _logger.LogWarning("Monthly model {ModelId} has no day-of-week flag set", modelId);
+                    return new RunResult
+                    {
+                        RunId = sessionId,
+                        Status = "Skipped",
+                        ErrorMessage = "Monthly model has no day-of-week flag set.",
+                        DurationSeconds = (int)sw.Elapsed.TotalSeconds
+                    };
+                }
+
+                for (int monthOffset = 0; monthOffset < effectiveMonthlyMonths; monthOffset++)
+                {
+                    var targetMonth = now.AddMonths(monthOffset);
+                    var monthStart = new DateTime(targetMonth.Year, targetMonth.Month, 1);
+
+                    DateTime? targetDate = MonthlyScheduleService.CalculateNthWeekdayOfMonth(
+                        monthStart, scheduledDay.Value, model.MonthlyRecurringType);
+
+                    if (targetDate == null) continue;
+                    if (targetDate.Value.Date < model.StartDate.Date) continue;
+
+                    var shift = ScheduleShift.FromModel(model, targetDate.Value, noteText);
+                    var key = shift.GetDuplicateKey();
+                    var modalKey = shift.GetModalDuplicateKey();
+
+                    bool isDuplicate = model.ScheduleType == 1
+                        ? existingModalKeys.Contains(modalKey)
+                        : existingKeys.Contains(key);
+
+                    if (isDuplicate)
+                    {
+                        duplicatesSkipped++;
+                        continue;
+                    }
+
+                    existingKeys.Add(key);
+                    existingModalKeys.Add(modalKey);
+
+                    if (hasGroup)
+                    {
+                        await using var conn = await _repo.CreateConnectionAsync(ct);
+                        int newGroupId = await _repo.InsertNewGroupScheduleAsync(conn, model.Client_id, ct);
+                        var insertedIds = await _repo.InsertMonthlyGroupShiftsAsync(
+                            conn, model.GroupScheduleId, newGroupId, targetDate.Value,
+                            existingKeys, existingModalKeys, ct);
+                        shiftsCreated += insertedIds.Count;
+                    }
+                    else
+                    {
+                        await using var conn = await _repo.CreateConnectionAsync(ct);
+                        long shiftId = await _repo.InsertShiftAndGetIdAsync(conn, shift, ct);
+                        shiftsCreated++;
+
+                        if (hasScanAreas)
+                            await _repo.CallProcessRecurringScanAreaAsync(conn, modelId, shiftId, ct);
+                    }
+                }
+
+                // Monthly sets lastrundate to 1st of next month
+                await _repo.UpdateSingleModelLastRunDateAsync(modelId, ct);
+            }
+            else
+            {
+                _logger.LogWarning("Unknown RecurringType={Type} for ModelId={ModelId}", model.RecurringType, modelId);
+            }
+
+            sw.Stop();
+            _logger.LogInformation(
+                "RunSingleModel completed: ModelId={ModelId}, ShiftsCreated={Created}, Duplicates={Dupes}, " +
+                "ResetDeleted={Reset}, Duration={Duration:F1}s",
+                modelId, shiftsCreated, duplicatesSkipped, resetShiftsDeleted, sw.Elapsed.TotalSeconds);
+
+            return new RunResult
+            {
+                RunId = sessionId,
+                Status = "Completed",
+                ShiftsCreated = shiftsCreated,
+                DuplicatesSkipped = duplicatesSkipped,
+                ResetShiftsDeleted = resetShiftsDeleted,
+                WeeklyModelsLoaded = 1,
+                DurationSeconds = (int)sw.Elapsed.TotalSeconds
+            };
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogError(ex, "RunSingleModel failed for ModelId={ModelId}: {Message}", modelId, ex.Message);
+            return new RunResult
+            {
+                RunId = sessionId,
+                Status = "Failed",
+                ShiftsCreated = shiftsCreated,
+                ResetShiftsDeleted = resetShiftsDeleted,
+                DurationSeconds = (int)sw.Elapsed.TotalSeconds,
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
+    /// <summary>
+    /// Determine which day of the week a model is scheduled for (used by monthly lean path).
+    /// </summary>
+    private static DayOfWeek? GetScheduledDayOfWeek(ScheduleModel model)
+    {
+        if (model.Monday)    return DayOfWeek.Monday;
+        if (model.Tuesday)   return DayOfWeek.Tuesday;
+        if (model.Wednesday) return DayOfWeek.Wednesday;
+        if (model.Thursday)  return DayOfWeek.Thursday;
+        if (model.Friday)    return DayOfWeek.Friday;
+        if (model.Saturday)  return DayOfWeek.Saturday;
+        if (model.Sunday)    return DayOfWeek.Sunday;
+        return null;
     }
 
     /// <summary>
@@ -84,6 +417,7 @@ public sealed class SchedulerJob
         int modelId = 0,
         int advanceDaysOverride = 0,
         int monthlyMonthsAheadOverride = 0,
+        bool reset = false,
         CancellationToken ct = default)
     {
         var totalSw = Stopwatch.StartNew();
@@ -125,10 +459,23 @@ public sealed class SchedulerJob
         await _repo.LogJobTrackingAsync("C# SchedulerJob: started", ct);
         await _repo.InsertRunSummaryAsync(sessionId, startTime, ct);
 
+        int resetShiftsDeleted = 0;
+
         try
         {
             // STEP 1: Ensure audit/conflict tables exist
             await _repo.EnsureAuditTablesAsync(ct);
+
+            // STEP 1.5: If reset=true + modelId, delete future unlinked shifts first
+            if (reset && modelId > 0)
+            {
+                _logger.LogInformation(
+                    "Reset mode: deleting future unlinked shifts for ModelId={ModelId} before regenerating",
+                    modelId);
+                resetShiftsDeleted = await _repo.DeleteFutureShiftsForModelAsync(modelId, ct);
+                await _repo.LogJobTrackingAsync(
+                    $"C# reset: deleted {resetShiftsDeleted} future shifts for ModelId={modelId}", ct);
+            }
 
             // STEP 2: Cleanup phase
             (orphanedDeleted, resetDeleted) = await _cleanupService.RunAsync(ct);
@@ -345,6 +692,7 @@ public sealed class SchedulerJob
             DuplicatesSkipped = (int)((shiftsSkipped > 0) ? shiftsSkipped : 0),
             OrphanedDeleted = orphanedDeleted,
             ResetDeleted = resetDeleted,
+            ResetShiftsDeleted = resetShiftsDeleted,
             WeeklyModelsLoaded = weeklyModelsLoaded,
             AuditEntries = auditEntriesCount,
             Conflicts = conflictsCount,

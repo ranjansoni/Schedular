@@ -181,6 +181,138 @@ public sealed class ScheduleRepository
     }
 
     // ========================================================================
+    // SINGLE MODEL — LEAN QUERIES (used by RunSingleModelAsync)
+    // Scoped queries that avoid loading the entire dataset.
+    // ========================================================================
+
+    /// <summary>
+    /// Load a single model by ID, regardless of lastrundate.
+    /// Joins clientdetail + companydetail to verify both are active.
+    /// Returns null if the model doesn't exist or is inactive.
+    /// </summary>
+    public async Task<ScheduleModel?> LoadModelByIdAsync(int modelId, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT
+                csm.Id, csm.employeeid AS EmployeeId, csm.Client_id,
+                csm.startdate AS StartDate, csm.enddate AS EndDate,
+                csm.fromdate AS FromDate, csm.todate AS ToDate,
+                csm.lastrundate AS LastRunDate,
+                csm.timein AS TimeIn, csm.timeout AS TimeOut,
+                csm.duration AS Duration,
+                csm.RecurringType, csm.recurringon AS RecurringOn,
+                csm.MonthlyRecurringType, csm.IsModelReset, csm.IsActive,
+                csm.noenddate AS NoEndDate,
+                csm.sunday AS Sunday, csm.monday AS Monday, csm.tuesday AS Tuesday,
+                csm.wednesday AS Wednesday, csm.thursday AS Thursday,
+                csm.friday AS Friday, csm.saturday AS Saturday,
+                csm.IsLateInAlert, csm.LateInDuration,
+                csm.IsLateOutAlert, csm.LateOutDuration,
+                csm.IsCustomInAlert, csm.IsCustomOutAlert,
+                csm.IsAutoClockOut, csm.AutoClockOutSelectedValue,
+                csm.AutoClockOutHour, csm.AutoClockOutMinutes,
+                csm.JobClassification_Id, csm.IsTeamSchedule,
+                csm.GroupScheduleId, csm.IsRounding, csm.RoundUp, csm.RoundDown,
+                csm.IsFlatRate, csm.FlatRate,
+                csm.IsOpenSchedule, csm.IsPublished,
+                csm.IsScheduleClockInRestrictionEnable,
+                csm.IsScheduleClockOutRestrictionEnable,
+                csm.IsScheduleDurationRestrictionEnable,
+                csm.ScheduleRestrictClockInBefore, csm.ScheduleRestrictClockInAfter,
+                csm.ScheduleRestrictClockOutBefore, csm.ScheduleRestrictClockOutAfter,
+                csm.ScheduleRestrictMinDuration, csm.ScheduleRestrictMaxDuration,
+                csm.IsScheduleRestrictionEnable, csm.CompanyID, csm.ScheduleType,
+                csm.BreakDetailID, csm.IsSuppressedScheduleRestriction,
+                csm.IsManagerApprovalEnabled, csm.ScheduleScanType, csm.UserNote
+            FROM  clientschedulemodel csm
+                  INNER JOIN clientdetail cd
+                         ON csm.Client_id = cd.Id AND cd.IsActive = 1
+                  INNER JOIN companydetail co
+                         ON co.Id = cd.company_id
+                        AND co.IsActive = 1
+                        AND co.AccountStatus = 'Active'
+            WHERE csm.Id = @ModelId
+              AND csm.isActive = 1";
+
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<ScheduleModel>(
+            sql, new { ModelId = modelId }, commandTimeout: 30);
+    }
+
+    /// <summary>
+    /// Load existing shift keys scoped to a specific client (covers group members too).
+    /// Much faster than loading all keys — typical client has hundreds, not hundreds of thousands.
+    /// </summary>
+    public async Task<HashSet<string>> LoadExistingShiftKeysForClientAsync(
+        int clientId, DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT CONCAT(Client_id, '|', employeeid, '|',
+                          DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
+                          DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
+            FROM   clientscheduleshift
+            WHERE  Client_id = @ClientId
+              AND  datetimein >= @StartDate
+              AND  datetimein <= @EndDate";
+
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        var keys = await conn.QueryAsync<string>(
+            sql, new { ClientId = clientId, StartDate = startDate.Date, EndDate = endDate.Date.AddDays(1) },
+            commandTimeout: 60);
+
+        return new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Load modal-aware shift keys scoped to a specific model ID.
+    /// After a reset (delete future), this will be nearly empty — very fast.
+    /// </summary>
+    public async Task<HashSet<string>> LoadExistingModalShiftKeysForModelAsync(
+        int modelId, DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT CONCAT(ModalId, '|', Client_id, '|', employeeid, '|',
+                          DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
+                          DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
+            FROM   clientscheduleshift
+            WHERE  ModalId = @ModelId
+              AND  datetimein >= @StartDate
+              AND  datetimein <= @EndDate";
+
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        var keys = await conn.QueryAsync<string>(
+            sql, new { ModelId = modelId, StartDate = startDate.Date, EndDate = endDate.Date.AddDays(1) },
+            commandTimeout: 60);
+
+        return new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Check if a single model has scan area templates.</summary>
+    public async Task<bool> HasScanAreasAsync(int modelId, CancellationToken ct)
+    {
+        const string sql = "SELECT COUNT(1) FROM scheduleshiftscandetailmodel WHERE ModalId = @ModelId LIMIT 1";
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        return await conn.QuerySingleAsync<int>(sql, new { ModelId = modelId }, commandTimeout: 10) > 0;
+    }
+
+    /// <summary>Check if a single model has claim templates.</summary>
+    public async Task<bool> HasClaimsAsync(int modelId, CancellationToken ct)
+    {
+        const string sql = "SELECT COUNT(1) FROM employeescheduleshiftmodelclaim WHERE ClientScheduleShiftModelID = @ModelId LIMIT 1";
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        return await conn.QuerySingleAsync<int>(sql, new { ModelId = modelId }, commandTimeout: 10) > 0;
+    }
+
+    /// <summary>Update lastrundate for a single model to NOW().</summary>
+    public async Task UpdateSingleModelLastRunDateAsync(int modelId, CancellationToken ct)
+    {
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        await conn.ExecuteAsync(
+            "UPDATE clientschedulemodel SET lastrundate = NOW() WHERE Id = @ModelId",
+            new { ModelId = modelId }, commandTimeout: 10);
+    }
+
+    // ========================================================================
     // DUPLICATE CHECK
     // Replaces: per-row COUNT(*) against 4.5M-row clientscheduleshift table
     // ========================================================================
@@ -934,6 +1066,63 @@ public sealed class ScheduleRepository
 
         _logger.LogInformation("Updated lastrundate ({Date:yyyy-MM-dd}) for {Count} monthly models",
             nextMonth, idList.Count);
+    }
+
+    // ========================================================================
+    // RESET: DELETE FUTURE SHIFTS FOR A SINGLE MODEL
+    // Used when a model is edited and the caller passes reset=true + modelId.
+    // SAFETY: only tomorrow onwards, only unlinked shifts (no timecard).
+    // ========================================================================
+
+    /// <summary>
+    /// Delete all future shifts for a specific model that are safe to remove.
+    /// "Future" = fromdate >= tomorrow. "Safe" = no timecard linked.
+    /// Returns the number of shifts deleted.
+    /// </summary>
+    public async Task<int> DeleteFutureShiftsForModelAsync(int modelId, CancellationToken ct)
+    {
+        const string findIdsSql = @"
+            SELECT css.Id
+            FROM   clientscheduleshift css
+            WHERE  css.ModalId = @ModelId
+              AND  css.fromdate >= DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND  (css.Employeetimecard_id IS NULL OR css.Employeetimecard_id = 0)";
+
+        List<int> idsToDelete;
+
+        await using (var conn = await _dbFactory.CreateConnectionAsync(ct))
+        {
+            var ids = await conn.QueryAsync<int>(findIdsSql, new { ModelId = modelId }, commandTimeout: 120);
+            idsToDelete = ids.ToList();
+        }
+
+        _logger.LogInformation("Reset: found {Count} future unlinked shifts to delete for ModelId={ModelId}",
+            idsToDelete.Count, modelId);
+
+        if (idsToDelete.Count == 0)
+            return 0;
+
+        int totalDeleted = 0;
+
+        foreach (var batch in idsToDelete.Chunk(_config.DeleteBatchSize))
+        {
+            await _retryHandler.ExecuteWithRetryAsync(async () =>
+            {
+                await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+                int deleted = await conn.ExecuteAsync(
+                    "DELETE FROM clientscheduleshift WHERE Id IN @Ids",
+                    new { Ids = batch },
+                    commandTimeout: 120);
+                totalDeleted += deleted;
+            }, "ResetDeleteFutureShifts", ct);
+
+            if (_config.SleepBetweenBatchesMs > 0)
+                await Task.Delay(_config.SleepBetweenBatchesMs, ct);
+        }
+
+        _logger.LogInformation("Reset: deleted {Count} future shifts for ModelId={ModelId}",
+            totalDeleted, modelId);
+        return totalDeleted;
     }
 
     // ========================================================================

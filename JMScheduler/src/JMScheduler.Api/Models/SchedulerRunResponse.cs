@@ -12,6 +12,7 @@ public sealed class SchedulerRunResponse
     public int OverlapsBlocked { get; set; }
     public int OrphanedDeleted { get; set; }
     public int ResetDeleted { get; set; }
+    public int ResetShiftsDeleted { get; set; }
     public int WeeklyModelsLoaded { get; set; }
     public int AuditEntries { get; set; }
     public int Conflicts { get; set; }
