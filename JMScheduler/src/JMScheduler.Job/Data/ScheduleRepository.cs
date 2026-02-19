@@ -210,6 +210,36 @@ public sealed class ScheduleRepository
         return $"{clientId}|{employeeId}|{dateTimeIn:yyyy-MM-dd HH:mm}|{dateTimeOut:yyyy-MM-dd HH:mm}";
     }
 
+    /// <summary>
+    /// Load model-aware shift keys for ScheduleType=1 (OpenWithAllClaim) deduplication.
+    /// Key format: "ModalId|ClientId|EmployeeId|DateTimeIn|DateTimeOut".
+    ///
+    /// ScheduleType=1 allows multiple models to create shifts for the same client/employee/time,
+    /// but the SAME model must NOT create duplicate shifts across runs. Including ModalId in the
+    /// key ensures cross-model shifts are preserved while cross-run duplicates are caught.
+    /// </summary>
+    public async Task<HashSet<string>> LoadExistingModalShiftKeysAsync(
+        DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT CONCAT(ModalId, '|', Client_id, '|', employeeid, '|',
+                          DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
+                          DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
+            FROM   clientscheduleshift
+            WHERE  datetimein >= @StartDate
+              AND  datetimein <= @EndDate";
+
+        await using var conn = await _dbFactory.CreateConnectionAsync(ct);
+        var keys = await conn.QueryAsync<string>(
+            sql,
+            new { StartDate = startDate.Date, EndDate = endDate.Date.AddDays(1) },
+            commandTimeout: 300);
+
+        var hashSet = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+        _logger.LogInformation("Loaded {Count} existing modal shift keys for ScheduleType=1 dedup", hashSet.Count);
+        return hashSet;
+    }
+
     // ========================================================================
     // MODEL CATEGORIZATION (fast path vs slow path)
     // Pre-query which models need post-insert processing
@@ -697,10 +727,16 @@ public sealed class ScheduleRepository
     /// For weekly group shifts: insert all models in the same group as individual shifts.
     /// The original SP does: SELECT ... FROM clientschedulemodel WHERE GroupScheduleId = P_GroupId
     /// and inserts a shift for each model in the group.
+    ///
+    /// Each member's shift is checked against the existingKeys/existingModalKeys HashSets
+    /// before insertion. This prevents re-inserting shifts that already exist when a
+    /// different model in the group (e.g. a ScheduleType=1 model) triggers the group path.
     /// </summary>
     public async Task<List<long>> InsertGroupShiftsAsync(
         MySqlConnection conn, int groupScheduleId, int newGroupId,
-        DateTime scheduleDate, string note, CancellationToken ct)
+        DateTime scheduleDate, string note,
+        HashSet<string> existingKeys, HashSet<string> existingModalKeys,
+        CancellationToken ct)
     {
         // Load all models sharing this group
         var groupModels = await conn.QueryAsync<ScheduleModel>(
@@ -730,8 +766,30 @@ public sealed class ScheduleRepository
         foreach (var gm in groupModels)
         {
             var shift = ScheduleShift.FromModelForGroup(gm, scheduleDate, newGroupId, note);
+
+            // Dedup check: same logic as the main loop — prevent re-inserting members
+            // that already have shifts for this date (e.g. from a previous run or earlier
+            // in this run when a different model in the group triggered the group path).
+            var key = shift.GetDuplicateKey();
+            var modalKey = shift.GetModalDuplicateKey();
+            bool alreadyExists = gm.ScheduleType == 1
+                ? existingModalKeys.Contains(modalKey)
+                : existingKeys.Contains(key);
+
+            if (alreadyExists)
+            {
+                _logger.LogDebug(
+                    "Group member skip: Modal={ModalId} already has shift for {Date:yyyy-MM-dd} (Group={GroupId})",
+                    gm.Id, scheduleDate, groupScheduleId);
+                continue;
+            }
+
             long shiftId = await InsertShiftAndGetIdAsync(conn, shift, ct);
             insertedIds.Add(shiftId);
+
+            // Register key so subsequent members/groups don't duplicate
+            existingKeys.Add(key);
+            existingModalKeys.Add(modalKey);
         }
 
         return insertedIds;
@@ -741,10 +799,15 @@ public sealed class ScheduleRepository
     /// For monthly group shifts: insert all models in the same group with the new group ID.
     /// Monthly uses RecurringType=1 filter and non-null/non-zero GroupScheduleId.
     /// Mirrors: MonthlySchedular.sql lines 221-223.
+    ///
+    /// Each member's shift is checked against the existingKeys/existingModalKeys HashSets
+    /// before insertion (same safeguard as the weekly group path).
     /// </summary>
     public async Task<List<long>> InsertMonthlyGroupShiftsAsync(
         MySqlConnection conn, int groupScheduleId, int newGroupId,
-        DateTime scheduleDate, CancellationToken ct)
+        DateTime scheduleDate,
+        HashSet<string> existingKeys, HashSet<string> existingModalKeys,
+        CancellationToken ct)
     {
         var groupModels = await conn.QueryAsync<ScheduleModel>(
             @"SELECT Id, employeeid AS EmployeeId, Client_id, fromdate AS FromDate, todate AS ToDate,
@@ -776,8 +839,27 @@ public sealed class ScheduleRepository
         foreach (var gm in groupModels)
         {
             var shift = ScheduleShift.FromModelForGroup(gm, scheduleDate, newGroupId, "Schedule Event Monthly");
+
+            // Dedup check: prevent re-inserting members that already have shifts
+            var key = shift.GetDuplicateKey();
+            var modalKey = shift.GetModalDuplicateKey();
+            bool alreadyExists = gm.ScheduleType == 1
+                ? existingModalKeys.Contains(modalKey)
+                : existingKeys.Contains(key);
+
+            if (alreadyExists)
+            {
+                _logger.LogDebug(
+                    "Monthly group member skip: Modal={ModalId} already has shift for {Date:yyyy-MM-dd} (Group={GroupId})",
+                    gm.Id, scheduleDate, groupScheduleId);
+                continue;
+            }
+
             long shiftId = await InsertShiftAndGetIdAsync(conn, shift, ct);
             insertedIds.Add(shiftId);
+
+            existingKeys.Add(key);
+            existingModalKeys.Add(modalKey);
         }
 
         return insertedIds;

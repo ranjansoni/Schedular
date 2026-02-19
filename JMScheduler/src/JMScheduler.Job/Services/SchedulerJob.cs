@@ -143,8 +143,11 @@ public sealed class SchedulerJob
                 endDate = monthlyEndDate;
 
             var existingKeys = await _repo.LoadExistingShiftKeysAsync(scheduleDateTime, endDate, ct);
+            var existingModalKeys = await _repo.LoadExistingModalShiftKeysAsync(scheduleDateTime, endDate, ct);
             phaseSw.Stop();
-            _logger.LogInformation("Shift key loading completed in {Elapsed:F1}s", phaseSw.Elapsed.TotalSeconds);
+            _logger.LogInformation(
+                "Shift key loading completed in {Elapsed:F1}s (standard={Standard}, modal={Modal})",
+                phaseSw.Elapsed.TotalSeconds, existingKeys.Count, existingModalKeys.Count);
 
             // ================================================================
             // STEP 4.5: Load employee shift intervals for overlap detection
@@ -189,7 +192,7 @@ public sealed class SchedulerJob
             if (weeklyModels.Count > 0)
             {
                 weeklyResult = await _weeklyService.ProcessAsync(
-                    weeklyModels, scheduleDateTime, existingKeys,
+                    weeklyModels, scheduleDateTime, existingKeys, existingModalKeys,
                     modelsWithScanAreas, modelsWithClaims, multiWeekTracking,
                     sessionId, startTime, overlapDetector, auditEntries, conflicts, ct);
 
@@ -209,7 +212,7 @@ public sealed class SchedulerJob
             // limitation. Running daily ensures shifts are created promptly.
             // ================================================================
             var monthlyResult = await _monthlyService.ProcessAsync(
-                scheduleDateTime, existingKeys, modelsWithScanAreas,
+                scheduleDateTime, existingKeys, existingModalKeys, modelsWithScanAreas,
                 sessionId, startTime, overlapDetector, auditEntries, conflicts, ct);
 
             await _repo.LogJobTrackingAsync(

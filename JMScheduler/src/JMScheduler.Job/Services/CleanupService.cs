@@ -11,10 +11,15 @@ namespace JMScheduler.Job.Services;
 /// Replaces the DELETE loops in CallProcessScheduleModal (schedular.sql lines 61-152)
 /// and the ClientShiftModalEditable procedure.
 ///
+/// SAFETY RULES (never violate):
+///   - NEVER delete shifts for today or any past date. Only tomorrow onwards.
+///   - NEVER delete a shift that has a timecard linked (Employeetimecard_id > 0).
+///   - Both rules apply to ALL delete operations in this class.
+///
 /// Operations performed (in order):
 ///   1. Seed job_ClientscheduleShiftnextrunStatus for new multi-week models
-///   2. Batch-delete orphaned shifts (ModalId references a deleted model)
-///   3. Batch-delete shifts for reset/inactive models
+///   2. Batch-delete orphaned shifts (ModalId references a deleted model) — future only, no TC
+///   3. Batch-delete shifts for reset/inactive models — future only, no TC
 ///   4. Run ClientShiftModalEditable logic (reset anchor dates for edited multi-week models)
 ///   5. Clear IsModelReset flags on clientschedulemodel
 ///   6. Clean working tables (job_clientschedulemodel, temp data tables, prune history)
@@ -96,7 +101,8 @@ public sealed class CleanupService
 
     /// <summary>
     /// Delete orphaned shifts where ModalId references a model that no longer exists.
-    /// Uses LEFT JOIN (not NOT IN) and pre-computes IDs for minimal lock duration.
+    /// Only targets shifts starting TOMORROW onwards that have no timecard and no claims.
+    /// Today's and past shifts are never touched.
     /// </summary>
     private async Task<int> DeleteOrphanedShiftsAsync(CancellationToken ct)
     {
@@ -109,15 +115,17 @@ public sealed class CleanupService
                    LEFT JOIN employeescheduleshiftclaim esc ON css.Id = esc.ClientScheduleShiftID
             WHERE  cm.Id IS NULL
               AND  css.ModalId > 0
-              AND  css.todate > NOW()
-              AND  esc.ClientScheduleShiftID IS NULL";
+              AND  css.fromdate >= DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND  esc.ClientScheduleShiftID IS NULL
+              AND  (css.Employeetimecard_id IS NULL OR css.Employeetimecard_id = 0)";
 
         return await BatchDeleteByIdsAsync(findOrphansSql, "DeleteOrphanedShifts", ct);
     }
 
     /// <summary>
     /// Delete shifts for models that have been reset (IsModelReset=1) or deactivated (IsActive=0).
-    /// Uses fromdate > CURDATE() (index-friendly, no date() wrapping).
+    /// Only targets shifts starting TOMORROW onwards that have no timecard and no claims.
+    /// Today's and past shifts are never touched.
     /// </summary>
     private async Task<int> DeleteResetInactiveShiftsAsync(CancellationToken ct)
     {
@@ -130,8 +138,9 @@ public sealed class CleanupService
                           ON css.ModalId = cm.Id
                          AND (cm.IsModelReset = 1 OR cm.IsActive = 0)
                    LEFT JOIN employeescheduleshiftclaim esc ON css.Id = esc.ClientScheduleShiftID
-            WHERE  css.fromdate > CURDATE()
-              AND  esc.ClientScheduleShiftID IS NULL";
+            WHERE  css.fromdate >= DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND  esc.ClientScheduleShiftID IS NULL
+              AND  (css.Employeetimecard_id IS NULL OR css.Employeetimecard_id = 0)";
 
         return await BatchDeleteByIdsAsync(findResetSql, "DeleteResetInactiveShifts", ct);
     }

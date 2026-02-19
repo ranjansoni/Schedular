@@ -16,7 +16,7 @@ namespace JMScheduler.Job.Services;
 ///   2. Multi-week check via MultiWeekDateCalculator (in-memory, no DB)
 ///   3. Duplicate check via HashSet (in-memory, O(1))
 ///   4. Overlap check via OverlapDetector (in-memory) — blocks conflicting shifts at different locations
-///   5. ScheduleType=1 (OpenWithAllClaim) skips duplicate check
+///   5. ScheduleType=1 (OpenWithAllClaim) uses modal-aware key for dedup (allows different models, blocks same-model re-runs)
 ///   6. Split into fast path (bulk insert) or slow path (individual + claims + scan areas)
 ///
 /// Behavioral notes (must match original SP exactly):
@@ -83,6 +83,7 @@ public sealed class WeeklyScheduleService
         List<ScheduleModel> models,
         DateTime scheduleDateTime,
         HashSet<string> existingKeys,
+        HashSet<string> existingModalKeys,
         HashSet<int> modelsWithScanAreas,
         HashSet<int> modelsWithClaims,
         Dictionary<int, NextRunStatus> multiWeekTracking,
@@ -153,10 +154,17 @@ public sealed class WeeklyScheduleService
                 // Build the shift to check for duplicates
                 var shift = ScheduleShift.FromModel(model, targetDate, NoteText);
                 var key = shift.GetDuplicateKey();
+                var modalKey = shift.GetModalDuplicateKey();
                 string pattern = ShiftAuditEntry.BuildRecurringPattern(model);
 
-                // ScheduleType=1 (OpenWithAllClaim) skips duplicate check
-                bool isDuplicate = model.ScheduleType != 1 && existingKeys.Contains(key);
+                // Duplicate check:
+                //   ScheduleType=1 (OpenWithAllClaim): uses modal-aware key so different models
+                //     can create shifts for the same slot, but the SAME model won't duplicate
+                //     across runs. This fixes the "12 copies per day" bug.
+                //   All other types: standard key (Client|Employee|DateTimeIn|DateTimeOut).
+                bool isDuplicate = model.ScheduleType == 1
+                    ? existingModalKeys.Contains(modalKey)
+                    : existingKeys.Contains(key);
 
                 if (isDuplicate)
                 {
@@ -194,8 +202,9 @@ public sealed class WeeklyScheduleService
                     continue;
                 }
 
-                // Add key to prevent intra-run duplicates
+                // Add keys to prevent intra-run duplicates
                 existingKeys.Add(key);
+                existingModalKeys.Add(modalKey);
                 result.ProcessedModelIds.Add(model.Id);
 
                 if (model.IsMultiWeek)
@@ -280,7 +289,8 @@ public sealed class WeeklyScheduleService
                     .ToList();
 
                 int slowInserted = await ProcessSlowPathAsync(
-                    uniqueGroupModels, targetDate, modelsWithScanAreas, modelsWithClaims, ct);
+                    uniqueGroupModels, targetDate, modelsWithScanAreas, modelsWithClaims,
+                    existingKeys, existingModalKeys, ct);
                 result.SlowPathInserted += slowInserted;
                 result.TotalShiftsCreated += slowInserted;
             }
@@ -368,6 +378,8 @@ public sealed class WeeklyScheduleService
         DateTime targetDate,
         HashSet<int> modelsWithScanAreas,
         HashSet<int> modelsWithClaims,
+        HashSet<string> existingKeys,
+        HashSet<string> existingModalKeys,
         CancellationToken ct)
     {
         int totalInserted = 0;
@@ -380,10 +392,11 @@ public sealed class WeeklyScheduleService
 
                 if (model.HasGroupSchedule)
                 {
-                    // Group path: clone group row, then insert all models in the group
+                    // Group path: clone group row, then insert non-duplicate models in the group
                     int newGroupId = await _repo.CloneGroupScheduleAsync(conn, model.GroupScheduleId, ct);
                     var insertedIds = await _repo.InsertGroupShiftsAsync(
-                        conn, model.GroupScheduleId, newGroupId, targetDate, NoteText, ct);
+                        conn, model.GroupScheduleId, newGroupId, targetDate, NoteText,
+                        existingKeys, existingModalKeys, ct);
                     totalInserted += insertedIds.Count;
                 }
                 else

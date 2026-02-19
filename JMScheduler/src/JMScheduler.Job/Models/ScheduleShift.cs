@@ -111,11 +111,23 @@ public sealed class ScheduleShift
 
     /// <summary>
     /// Build the duplicate-check key for this shift: "ClientId|EmployeeId|DateTimeIn|DateTimeOut".
-    /// Must match the format used by ScheduleRepository.BuildShiftKey().
+    /// Must match the format used by ScheduleRepository.LoadExistingShiftKeysAsync().
     /// </summary>
     public string GetDuplicateKey()
     {
         return $"{Client_id}|{EmployeeId}|{DateTimeIn:yyyy-MM-dd HH:mm}|{DateTimeOut:yyyy-MM-dd HH:mm}";
+    }
+
+    /// <summary>
+    /// Build a model-aware duplicate key: "ModalId|ClientId|EmployeeId|DateTimeIn|DateTimeOut".
+    /// Used for ScheduleType=1 (OpenWithAllClaim) where multiple models may legitimately
+    /// produce shifts with the same Client/Employee/DateTime, but the same model should
+    /// NOT create duplicates across runs.
+    /// Must match the format used by ScheduleRepository.LoadExistingModalShiftKeysAsync().
+    /// </summary>
+    public string GetModalDuplicateKey()
+    {
+        return $"{ModalId}|{Client_id}|{EmployeeId}|{DateTimeIn:yyyy-MM-dd HH:mm}|{DateTimeOut:yyyy-MM-dd HH:mm}";
     }
 
     // ---- Private helpers ----

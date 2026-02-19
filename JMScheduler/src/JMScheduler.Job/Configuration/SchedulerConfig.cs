@@ -2,7 +2,7 @@ namespace JMScheduler.Job.Configuration;
 
 /// <summary>
 /// Configuration settings for the scheduler job, bound from appsettings.json "Scheduler" section.
-/// All batch sizes and delays are tunable without code changes.
+/// Values below are fallback defaults only; appsettings.json (and JM_ env vars) override them.
 /// </summary>
 public sealed class SchedulerConfig
 {

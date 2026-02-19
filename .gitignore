@@ -31,3 +31,12 @@ Thumbs.db
 *.local.json
 .env
 .env.*
+
+# Compiled publish output — copy to server separately, never commit binaries
+publish/
+
+# Other codebases referenced locally for investigation only — not part of this repo
+JM Portal Code/
+JM connect/
+Production_JMConnectAPI-30/
+Production_JMConnectAPI-30.zip

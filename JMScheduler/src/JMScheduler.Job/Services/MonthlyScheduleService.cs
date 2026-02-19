@@ -90,6 +90,7 @@ public sealed class MonthlyScheduleService
     public async Task<MonthlyResult> ProcessAsync(
         DateTime scheduleDate,
         HashSet<string> existingKeys,
+        HashSet<string> existingModalKeys,
         HashSet<int> modelsWithScanAreas,
         string runId,
         DateTime runDate,
@@ -173,9 +174,17 @@ public sealed class MonthlyScheduleService
                 // Build shift for duplicate check
                 var shift = ScheduleShift.FromModel(model, targetDate.Value, NoteText);
                 var key = shift.GetDuplicateKey();
+                var modalKey = shift.GetModalDuplicateKey();
                 string pattern = ShiftAuditEntry.BuildRecurringPattern(model);
 
-                if (existingKeys.Contains(key))
+                // Same dual-key dedup as weekly:
+                //   ScheduleType=1 → modal-aware key (allow different models, block same model re-runs)
+                //   All others → standard key
+                bool isDuplicate = model.ScheduleType == 1
+                    ? existingModalKeys.Contains(modalKey)
+                    : existingKeys.Contains(key);
+
+                if (isDuplicate)
                 {
                     result.DuplicatesSkipped++;
                     auditEntries.Add(ShiftAuditEntry.Duplicate(runId, runDate, shift, model, "Monthly", pattern));
@@ -212,6 +221,7 @@ public sealed class MonthlyScheduleService
                 }
 
                 existingKeys.Add(key);
+                existingModalKeys.Add(modalKey);
 
                 // Register this shift in the overlap detector for subsequent checks
                 overlapDetector.RegisterShift(
@@ -279,7 +289,9 @@ public sealed class MonthlyScheduleService
 
             foreach (var (model, targetDate) in uniqueGroupModels)
             {
-                int inserted = await InsertMonthlyShiftAsync(model, targetDate, modelsWithScanAreas, ct);
+                int inserted = await InsertMonthlyShiftAsync(
+                    model, targetDate, modelsWithScanAreas,
+                    existingKeys, existingModalKeys, ct);
                 result.TotalShiftsCreated += inserted;
             }
         }
@@ -302,6 +314,8 @@ public sealed class MonthlyScheduleService
         ScheduleModel model,
         DateTime targetDate,
         HashSet<int> modelsWithScanAreas,
+        HashSet<string> existingKeys,
+        HashSet<string> existingModalKeys,
         CancellationToken ct)
     {
         int inserted = 0;
@@ -315,7 +329,8 @@ public sealed class MonthlyScheduleService
                 // Monthly group: INSERT NEW groupschedule row (different from weekly which clones)
                 int newGroupId = await _repo.InsertNewGroupScheduleAsync(conn, model.Client_id, ct);
                 var insertedIds = await _repo.InsertMonthlyGroupShiftsAsync(
-                    conn, model.GroupScheduleId, newGroupId, targetDate, ct);
+                    conn, model.GroupScheduleId, newGroupId, targetDate,
+                    existingKeys, existingModalKeys, ct);
                 inserted = insertedIds.Count;
             }
             else
