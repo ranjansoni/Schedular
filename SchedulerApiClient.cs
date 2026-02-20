@@ -262,18 +262,21 @@ public sealed class SchedulerApiClient
                 };
             }
 
-            // 202 = job accepted and running in background
-            if ((int)response.StatusCode == 202)
+            response.EnsureSuccessStatusCode();
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (string.IsNullOrWhiteSpace(body))
+                return new SchedulerRunResult { Status = "Accepted" };
+
+            if (body.Contains("\"runId\"") && body.Contains("\"message\"") && !body.Contains("\"shiftsCreated\""))
             {
-                return new SchedulerRunResult
-                {
-                    Status = "Accepted",
-                    ErrorMessage = null
-                };
+                return new SchedulerRunResult { Status = "Accepted" };
             }
 
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadFromJsonAsync<SchedulerRunResult>(cancellationToken: ct);
+            return System.Text.Json.JsonSerializer.Deserialize<SchedulerRunResult>(body,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new SchedulerRunResult { Status = "Accepted" };
         }
         catch (TaskCanceledException)
         {

@@ -30,7 +30,7 @@ public sealed class SchedulerController : ControllerBase
     ///   - ModelId == 0 → full batch path (in-process lock + DB concurrency guard)
     /// </summary>
     [HttpPost("run")]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public IActionResult Run([FromBody] SchedulerRunRequest? request)
     {
@@ -88,7 +88,7 @@ public sealed class SchedulerController : ControllerBase
             }
         });
 
-        return Accepted(new { runId, message = "Job started. Poll GET /api/scheduler/status for result." });
+        return Ok(new { runId, message = "Job started. Poll GET /api/scheduler/status for result." });
     }
 
     private IActionResult RunBatch(SchedulerRunRequest request)
@@ -150,7 +150,7 @@ public sealed class SchedulerController : ControllerBase
             }
         });
 
-        return Accepted(new { runId, message = "Batch job started. Poll GET /api/scheduler/status for result." });
+        return Ok(new { runId, message = "Batch job started. Poll GET /api/scheduler/status for result." });
     }
 
     private static SchedulerRunResponse MapResponse(SchedulerJob.RunResult result) => new()
