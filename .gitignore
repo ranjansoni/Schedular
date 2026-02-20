@@ -36,6 +36,13 @@ Thumbs.db
 publish/
 publish-api/
 
+# Documentation — keep local only, not on GitHub
+*.md
+
+# Snapshot CSVs
+*snapshot*.csv
+*Snapshot*.csv
+
 # Other codebases referenced locally for investigation only — not part of this repo
 JM Portal Code/
 JM connect/
