@@ -13,6 +13,7 @@ public sealed class SchedulerController : ControllerBase
 
     private static volatile bool _isRunning;
     private static readonly object _lock = new();
+    private static volatile SchedulerRunResponse? _lastResult;
 
     public SchedulerController(SchedulerJob schedulerJob, ILogger<SchedulerController> logger)
     {
@@ -21,16 +22,17 @@ public sealed class SchedulerController : ControllerBase
     }
 
     /// <summary>
-    /// Trigger a scheduler run with optional filters.
+    /// Trigger a scheduler run. Returns 202 Accepted immediately — the job
+    /// runs in the background. Poll GET /api/scheduler/status to see the result.
     ///
     /// Routing logic:
-    ///   - ModelId > 0  → lean single-model path (no lock, no audit, concurrent-safe)
+    ///   - ModelId > 0  → lean single-model path (no lock, concurrent-safe)
     ///   - ModelId == 0 → full batch path (in-process lock + DB concurrency guard)
     /// </summary>
     [HttpPost("run")]
-    [ProducesResponseType(typeof(SchedulerRunResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> Run([FromBody] SchedulerRunRequest? request, CancellationToken ct)
+    public IActionResult Run([FromBody] SchedulerRunRequest? request)
     {
         request ??= new SchedulerRunRequest();
 
@@ -39,50 +41,57 @@ public sealed class SchedulerController : ControllerBase
             return BadRequest(new { error = "Reset requires a ModelId. Pass modelId > 0 when using reset." });
         }
 
-        // ---- Single-model lean path: no lock, no batch overhead ----
         if (request.ModelId > 0)
         {
-            return await RunSingleModel(request, ct);
+            return RunSingleModel(request);
         }
 
-        // ---- Full batch path: in-process lock + DB concurrency ----
-        return await RunBatch(request, ct);
+        return RunBatch(request);
     }
 
-    private async Task<IActionResult> RunSingleModel(SchedulerRunRequest request, CancellationToken ct)
+    private IActionResult RunSingleModel(SchedulerRunRequest request)
     {
+        var runId = $"single-{request.ModelId}-{DateTime.Now:yyyyMMddHHmmss}";
+
         _logger.LogInformation(
-            "API single-model run: ModelId={ModelId}, Reset={Reset}, AdvanceDays={AdvanceDays}, MonthlyMonths={Monthly}",
-            request.ModelId, request.Reset, request.AdvanceDays, request.MonthlyMonthsAhead);
+            "API single-model run queued: RunId={RunId}, ModelId={ModelId}, Reset={Reset}, " +
+            "AdvanceDays={AdvanceDays}, MonthlyMonths={Monthly}",
+            runId, request.ModelId, request.Reset, request.AdvanceDays, request.MonthlyMonthsAhead);
 
-        try
+        var job = _schedulerJob;
+        var logger = _logger;
+        var req = request;
+
+        _ = Task.Run(async () =>
         {
-            var result = await _schedulerJob.RunSingleModelAsync(
-                request.ModelId,
-                request.Reset,
-                request.AdvanceDays,
-                request.MonthlyMonthsAhead,
-                ct);
+            try
+            {
+                var result = await job.RunSingleModelAsync(
+                    req.ModelId, req.Reset, req.AdvanceDays, req.MonthlyMonthsAhead,
+                    CancellationToken.None);
 
-            var response = MapResponse(result);
+                _lastResult = MapResponse(result);
 
-            if (result.Status == "NotFound")
-                return NotFound(response);
+                logger.LogInformation(
+                    "Single-model run completed: RunId={RunId}, Status={Status}, Created={Created}",
+                    result.RunId, result.Status, result.ShiftsCreated);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Background single-model run failed for ModelId={ModelId}", req.ModelId);
+                _lastResult = new SchedulerRunResponse
+                {
+                    RunId = runId,
+                    Status = "Failed",
+                    ErrorMessage = ex.Message
+                };
+            }
+        });
 
-            return Ok(response);
-        }
-        catch (OperationCanceledException)
-        {
-            return StatusCode(499, new { error = "Request was cancelled by the client." });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Single-model run failed for ModelId={ModelId}", request.ModelId);
-            return StatusCode(500, new { error = ex.Message });
-        }
+        return Accepted(new { runId, message = "Job started. Poll GET /api/scheduler/status for result." });
     }
 
-    private async Task<IActionResult> RunBatch(SchedulerRunRequest request, CancellationToken ct)
+    private IActionResult RunBatch(SchedulerRunRequest request)
     {
         lock (_lock)
         {
@@ -94,43 +103,54 @@ public sealed class SchedulerController : ControllerBase
             _isRunning = true;
         }
 
-        try
-        {
-            _logger.LogInformation(
-                "API batch run starting: CompanyId={CompanyId}, AdvanceDays={AdvanceDays}, " +
-                "MonthlyMonthsAhead={MonthlyMonthsAhead}",
-                request.CompanyId, request.AdvanceDays, request.MonthlyMonthsAhead);
+        var runId = Guid.NewGuid().ToString();
 
-            var result = await _schedulerJob.RunAsync(
-                DateTime.Now,
-                companyId: request.CompanyId,
-                advanceDaysOverride: request.AdvanceDays,
-                monthlyMonthsAheadOverride: request.MonthlyMonthsAhead,
-                ct: ct);
+        _logger.LogInformation(
+            "API batch run queued: RunId={RunId}, CompanyId={CompanyId}, AdvanceDays={AdvanceDays}, " +
+            "MonthlyMonthsAhead={MonthlyMonthsAhead}",
+            runId, request.CompanyId, request.AdvanceDays, request.MonthlyMonthsAhead);
 
-            var response = MapResponse(result);
+        var job = _schedulerJob;
+        var logger = _logger;
+        var req = request;
 
-            if (result.Status == "Blocked")
-                return Conflict(response);
-
-            return Ok(response);
-        }
-        catch (OperationCanceledException)
+        _ = Task.Run(async () =>
         {
-            return StatusCode(499, new { error = "Request was cancelled by the client." });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Scheduler batch run failed");
-            return StatusCode(500, new { error = ex.Message });
-        }
-        finally
-        {
-            lock (_lock)
+            try
             {
-                _isRunning = false;
+                var result = await job.RunAsync(
+                    DateTime.Now,
+                    companyId: req.CompanyId,
+                    advanceDaysOverride: req.AdvanceDays,
+                    monthlyMonthsAheadOverride: req.MonthlyMonthsAhead,
+                    ct: CancellationToken.None);
+
+                _lastResult = MapResponse(result);
+
+                logger.LogInformation(
+                    "Batch run completed: RunId={RunId}, Status={Status}, Created={Created}",
+                    result.RunId, result.Status, result.ShiftsCreated);
             }
-        }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Background batch run failed");
+                _lastResult = new SchedulerRunResponse
+                {
+                    RunId = runId,
+                    Status = "Failed",
+                    ErrorMessage = ex.Message
+                };
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    _isRunning = false;
+                }
+            }
+        });
+
+        return Accepted(new { runId, message = "Batch job started. Poll GET /api/scheduler/status for result." });
     }
 
     private static SchedulerRunResponse MapResponse(SchedulerJob.RunResult result) => new()
@@ -152,7 +172,7 @@ public sealed class SchedulerController : ControllerBase
 
     /// <summary>
     /// Health/status check — no authentication required.
-    /// Returns 200 if the API is running and whether a job is currently in progress.
+    /// Returns 200 with current state and the last completed run result.
     /// </summary>
     [HttpGet("status")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -162,6 +182,7 @@ public sealed class SchedulerController : ControllerBase
         {
             status = "healthy",
             isRunning = _isRunning,
+            lastResult = _lastResult,
             timestamp = DateTime.Now,
             version = typeof(SchedulerController).Assembly.GetName().Version?.ToString() ?? "1.0.0"
         });

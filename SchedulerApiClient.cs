@@ -77,11 +77,11 @@
 //       {
 //           // ... insert model to DB first ...
 //
-//           // NEW model — just generate shifts (nothing to delete)
+//           // NEW model — fire-and-forget: returns immediately with "Accepted"
 //           var result = await _scheduler.RunForModelAsync(model.Id, advanceDays: 365);
 //
 //           if (result == null || !result.IsSuccess)
-//               _logger.LogWarning("Scheduler did not complete for model {ModelId}", model.Id);
+//               _logger.LogWarning("Scheduler did not accept job for model {ModelId}", model.Id);
 //
 //           return RedirectToAction("Index");
 //       }
@@ -91,13 +91,14 @@
 //       {
 //           // ... update model in DB first ...
 //
-//           // EDITED model — delete old future shifts, regenerate with new settings
+//           // EDITED model — fire-and-forget: deletes future + regenerates in background
 //           var result = await _scheduler.ResetAndRegenerateModelAsync(model.Id, advanceDays: 365);
 //
 //           if (result != null && result.IsSuccess)
-//               _logger.LogInformation(
-//                   "Model {ModelId} reset: deleted {Deleted}, created {Created}",
-//                   model.Id, result.ResetShiftsDeleted, result.ShiftsCreated);
+//               _logger.LogInformation("Model {ModelId} reset+regenerate accepted", model.Id);
+//
+//           // If you need the final result (optional):
+//           // var finalResult = await _scheduler.PollForResultAsync(timeoutSeconds: 30);
 //
 //           return RedirectToAction("Index");
 //       }
@@ -228,8 +229,9 @@ public sealed class SchedulerApiClient
 
     /// <summary>
     /// Low-level run method. All public methods call this.
-    /// Returns null if the request fails or a non-success HTTP status is returned.
-    /// Logs should be checked on the server side via job_scheduler_run table.
+    /// The API returns 202 Accepted immediately (fire-and-forget). The job runs
+    /// in the background on the server. If you need the final result, call
+    /// <see cref="PollForResultAsync"/> after this returns.
     /// </summary>
     private async Task<SchedulerRunResult?> RunAsync(
         int companyId = 0,
@@ -260,12 +262,21 @@ public sealed class SchedulerApiClient
                 };
             }
 
+            // 202 = job accepted and running in background
+            if ((int)response.StatusCode == 202)
+            {
+                return new SchedulerRunResult
+                {
+                    Status = "Accepted",
+                    ErrorMessage = null
+                };
+            }
+
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadFromJsonAsync<SchedulerRunResult>(cancellationToken: ct);
         }
         catch (TaskCanceledException)
         {
-            // Request timed out (Timeout set to 10 min in registration — should not happen)
             return new SchedulerRunResult
             {
                 Status = "Timeout",
@@ -274,13 +285,56 @@ public sealed class SchedulerApiClient
         }
         catch (HttpRequestException ex)
         {
-            // Network / connection error
             return new SchedulerRunResult
             {
                 Status = "Failed",
                 ErrorMessage = $"Could not reach scheduler API: {ex.Message}"
             };
         }
+    }
+
+    /// <summary>
+    /// Poll the /status endpoint until the job finishes (isRunning becomes false)
+    /// and return the last completed result. Useful after RunAsync returns "Accepted".
+    ///
+    /// Example:
+    ///   var accepted = await _scheduler.ResetAndRegenerateModelAsync(modelId);
+    ///   if (accepted?.Status == "Accepted")
+    ///   {
+    ///       var finalResult = await _scheduler.PollForResultAsync(timeoutSeconds: 120);
+    ///   }
+    /// </summary>
+    /// <param name="pollIntervalSeconds">Seconds between each poll. Default 2.</param>
+    /// <param name="timeoutSeconds">Max seconds to wait. Default 300 (5 min).</param>
+    public async Task<SchedulerRunResult?> PollForResultAsync(
+        int pollIntervalSeconds = 2,
+        int timeoutSeconds = 300,
+        CancellationToken ct = default)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                var response = await _http.GetFromJsonAsync<SchedulerStatusResult>(
+                    "api/scheduler/status", ct);
+
+                if (response != null && !response.IsRunning && response.LastResult != null)
+                    return response.LastResult;
+            }
+            catch { /* transient error, keep polling */ }
+
+            await Task.Delay(TimeSpan.FromSeconds(pollIntervalSeconds), ct);
+        }
+
+        return new SchedulerRunResult
+        {
+            Status = "Timeout",
+            ErrorMessage = $"Job did not complete within {timeoutSeconds} seconds."
+        };
     }
 }
 
@@ -298,11 +352,12 @@ public sealed class SchedulerRunResult
     public string RunId { get; set; } = string.Empty;
 
     /// <summary>
+    /// "Accepted"  — job was accepted and is running in the background (202). Poll status for result.
     /// "Completed" — job finished normally.
     /// "Blocked"   — another run was already in progress (try again later).
     /// "Cancelled" — job was cancelled mid-run.
     /// "Failed"    — job threw an unhandled exception (check ErrorMessage + server logs).
-    /// "Timeout"   — HTTP request from portal timed out (job may still be running on server).
+    /// "Timeout"   — polling timed out (job may still be running on server).
     /// </summary>
     public string Status { get; set; } = string.Empty;
 
@@ -333,6 +388,19 @@ public sealed class SchedulerRunResult
     /// <summary>Non-null only when Status is "Failed" or "Blocked". Human-readable error.</summary>
     public string? ErrorMessage { get; set; }
 
-    /// <summary>True if the job completed without errors.</summary>
-    public bool IsSuccess => Status == "Completed";
+    /// <summary>True if the job was accepted or completed without errors.</summary>
+    public bool IsSuccess => Status is "Completed" or "Accepted";
+}
+
+/// <summary>
+/// Mirrors the JSON returned by GET /api/scheduler/status.
+/// Used internally by <see cref="SchedulerApiClient.PollForResultAsync"/>.
+/// </summary>
+public sealed class SchedulerStatusResult
+{
+    public string Status { get; set; } = string.Empty;
+    public bool IsRunning { get; set; }
+    public SchedulerRunResult? LastResult { get; set; }
+    public DateTime Timestamp { get; set; }
+    public string Version { get; set; } = string.Empty;
 }
