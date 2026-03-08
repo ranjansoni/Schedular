@@ -22,13 +22,15 @@ public sealed class MultiWeekDateCalculator
     /// <summary>
     /// Calculate all valid schedule dates for a multi-week model within the given advance window.
     /// Returns a HashSet of dates (date-only, no time component) that should have shifts created.
+    ///
+    /// Cycles are always aligned to model.StartDate to prevent drift. Previous versions used
+    /// anchorDate (last shift/tracking date) as the cycle root, which could be mid-cycle and
+    /// cause shifts to be generated in the wrong week of the bi-weekly/tri-weekly pattern.
     /// </summary>
     /// <param name="model">The schedule model with recurringon > 1.</param>
     /// <param name="anchorDate">
-    /// The starting point for date generation.
-    /// For first-time models: model.StartDate.
-    /// For previously-run models: Nextscheduledate from job_ClientscheduleShiftnextrunStatus.
-    /// For edited models with no shifts: model.StartDate (fallback).
+    /// Used to determine the advance window end point (anchorDate + advanceDays).
+    /// Cycle alignment always uses model.StartDate instead.
     /// </param>
     /// <param name="restrictionDate">
     /// Only dates AFTER this date are valid.
@@ -47,34 +49,24 @@ public sealed class MultiWeekDateCalculator
         var validDates = new HashSet<DateTime>();
 
         if (model.RecurringOn <= 1)
-            return validDates; // Weekly models don't need this calculation
+            return validDates;
 
-        int recurInterval = model.RecurringOn;
-        int daysPerCycle = 7 * recurInterval;
+        int daysPerCycle = 7 * model.RecurringOn;
 
-        // How many full cycles fit in the advance window
-        // (matches: runinverval = Rundays / (7 * RecurInterval))
-        int runInterval = advanceDays / daysPerCycle;
-        int loopCounter = runInterval + 1;
+        // Always align cycles to model.StartDate — this is the immutable cycle root
+        DateTime cycleRoot = model.StartDate.Date;
 
-        // Generate dates by walking backwards from the furthest cycle to the nearest
-        // This mirrors the outer WHILE loop in SpanClientScheduleShift (lines 103-349)
-        while (loopCounter >= 1)
+        // End of the window: cover at least anchorDate + advanceDays + one extra cycle
+        DateTime endDate = anchorDate.Date.AddDays(advanceDays + 7);
+
+        // Jump to the first cycle that could contain dates near the restriction date
+        int daysSinceRoot = Math.Max(0, (int)(restrictionDate.Date - cycleRoot).TotalDays);
+        int completedCycles = daysSinceRoot / daysPerCycle;
+        int startCycle = Math.Max(0, completedCycles - 1);
+        DateTime firstCycleStart = cycleRoot.AddDays(startCycle * daysPerCycle);
+
+        for (var weekStart = firstCycleStart; weekStart <= endDate; weekStart = weekStart.AddDays(daysPerCycle))
         {
-            // Calculate the start of this cycle's week
-            // Matches: P_newschedudate = DATE_ADD(P_firstoccurrence, INTERVAL (DaysToSubtract)*runinverval DAY)
-            DateTime weekStart;
-            if (runInterval == 0)
-            {
-                weekStart = anchorDate.Date;
-            }
-            else
-            {
-                weekStart = anchorDate.Date.AddDays(daysPerCycle * runInterval);
-            }
-
-            // Walk through 7 days of this week, checking day-of-week flags
-            // Matches the inner WHILE (P_Countloop >= 1) loop
             for (int dayOffset = 0; dayOffset < 7; dayOffset++)
             {
                 DateTime candidateDate = weekStart.AddDays(dayOffset);
@@ -82,16 +74,11 @@ public sealed class MultiWeekDateCalculator
                 if (!model.IsScheduledForDay(candidateDate.DayOfWeek))
                     continue;
 
-                // Only include dates after the restriction date
-                // Matches: if(date(P_newschedudate) > date(P_restrictschedule))
                 if (candidateDate.Date > restrictionDate.Date)
                 {
                     validDates.Add(candidateDate.Date);
                 }
             }
-
-            runInterval--;
-            loopCounter--;
         }
 
         return validDates;

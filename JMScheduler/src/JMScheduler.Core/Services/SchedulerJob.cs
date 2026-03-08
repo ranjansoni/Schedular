@@ -210,24 +210,28 @@ public sealed class SchedulerJob
                         continue;
                     }
 
-                    existingKeys.Add(key);
-                    existingModalKeys.Add(modalKey);
-
                     if (hasGroup)
                     {
+                        // Don't add keys — InsertGroupShiftsAsync handles dedup + key registration
                         groupDates.Add(targetDate);
-                    }
-                    else if (hasClaims)
-                    {
-                        claimsShifts.Add(shift);
-                    }
-                    else if (hasScanAreas)
-                    {
-                        scanAreaShifts.Add(shift);
                     }
                     else
                     {
-                        fastPathShifts.Add(shift);
+                        existingKeys.Add(key);
+                        existingModalKeys.Add(modalKey);
+
+                        if (hasClaims)
+                        {
+                            claimsShifts.Add(shift);
+                        }
+                        else if (hasScanAreas)
+                        {
+                            scanAreaShifts.Add(shift);
+                        }
+                        else
+                        {
+                            fastPathShifts.Add(shift);
+                        }
                     }
                 }
 

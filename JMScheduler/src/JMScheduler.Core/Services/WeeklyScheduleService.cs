@@ -203,43 +203,44 @@ public sealed class WeeklyScheduleService
                     continue;
                 }
 
-                // Add keys to prevent intra-run duplicates
-                existingKeys.Add(key);
-                existingModalKeys.Add(modalKey);
                 result.ProcessedModelIds.Add(model.Id);
 
                 if (model.IsMultiWeek)
                     result.MultiWeekModelsWithChanges.Add(model.Id);
 
-                // Register this shift in the overlap detector for subsequent checks
-                overlapDetector.RegisterShift(
-                    model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut, model.Id);
-
-                // Log audit entry as Created
-                auditEntries.Add(ShiftAuditEntry.Created(runId, runDate, shift, model, "Weekly", pattern));
-
                 if (hasGroup)
                 {
-                    // Group path: needs LAST_INSERT_ID for group clone — truly individual
+                    // Group path: InsertGroupShiftsAsync will handle key registration,
+                    // overlap registration, and audit logging after actual insertion.
+                    // Do NOT add keys here — it would cause the group insert to
+                    // skip all members as "already existing."
                     groupModels.Add(model);
-                }
-                else if (hasClaims)
-                {
-                    // Claims path: bulk insert + bulk claims copy (+ bulk scan if needed)
-                    claimsShifts.Add(shift);
-                    claimsModelIds.Add(model.Id);
-                    if (hasScanAreas) claimsWithScanAreaIds.Add(model.Id);
-                }
-                else if (hasScanAreas)
-                {
-                    // Scan-area-only path: bulk insert + bulk scan area copy
-                    scanAreaShifts.Add(shift);
-                    scanAreaModelIds.Add(model.Id);
                 }
                 else
                 {
-                    // Fast path: pure bulk insert, no post-processing
-                    fastPathShifts.Add(shift);
+                    existingKeys.Add(key);
+                    existingModalKeys.Add(modalKey);
+
+                    overlapDetector.RegisterShift(
+                        model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut, model.Id);
+
+                    auditEntries.Add(ShiftAuditEntry.Created(runId, runDate, shift, model, "Weekly", pattern));
+
+                    if (hasClaims)
+                    {
+                        claimsShifts.Add(shift);
+                        claimsModelIds.Add(model.Id);
+                        if (hasScanAreas) claimsWithScanAreaIds.Add(model.Id);
+                    }
+                    else if (hasScanAreas)
+                    {
+                        scanAreaShifts.Add(shift);
+                        scanAreaModelIds.Add(model.Id);
+                    }
+                    else
+                    {
+                        fastPathShifts.Add(shift);
+                    }
                 }
             }
 
