@@ -137,13 +137,16 @@ public sealed class SchedulerJob
             }
 
             // 3. Load scoped dedup keys (client-scoped is tiny compared to global)
+            // Start from 1st of current month so monthly shifts created earlier
+            // this month (by existing SP or prior runs) are included in dedup.
             var now = DateTime.Now;
+            var keyWindowStart = new DateTime(now.Year, now.Month, 1);
             var endDate = model.RecurringType == 1
                 ? now.AddMonths(effectiveMonthlyMonths).AddDays(1)
                 : now.AddDays(effectiveAdvanceDays + 1);
 
-            var existingKeys = await _repo.LoadExistingShiftKeysForClientAsync(model.Client_id, now, endDate, ct);
-            var existingModalKeys = await _repo.LoadExistingModalShiftKeysForModelAsync(modelId, now, endDate, ct);
+            var existingKeys = await _repo.LoadExistingShiftKeysForClientAsync(model.Client_id, keyWindowStart, endDate, ct);
+            var existingModalKeys = await _repo.LoadExistingModalShiftKeysForModelAsync(modelId, keyWindowStart, endDate, ct);
 
             _logger.LogInformation("Loaded scoped keys: standard={Std}, modal={Modal}",
                 existingKeys.Count, existingModalKeys.Count);
@@ -288,8 +291,8 @@ public sealed class SchedulerJob
                 // === MONTHLY ===
                 string noteText = "Schedule Event Monthly";
 
-                DayOfWeek? scheduledDay = GetScheduledDayOfWeek(model);
-                if (scheduledDay == null)
+                var scheduledDays = MonthlyScheduleService.GetAllScheduledDays(model);
+                if (scheduledDays.Count == 0)
                 {
                     _logger.LogWarning("Monthly model {ModelId} has no day-of-week flag set", modelId);
                     return new RunResult
@@ -306,50 +309,52 @@ public sealed class SchedulerJob
                     var targetMonth = now.AddMonths(monthOffset);
                     var monthStart = new DateTime(targetMonth.Year, targetMonth.Month, 1);
 
-                    DateTime? targetDate = MonthlyScheduleService.CalculateNthWeekdayOfMonth(
-                        monthStart, scheduledDay.Value, model.MonthlyRecurringType);
-
-                    if (targetDate == null) continue;
-                    if (targetDate.Value.Date < model.StartDate.Date) continue;
-
-                    var shift = ScheduleShift.FromModel(model, targetDate.Value, noteText);
-                    var key = shift.GetDuplicateKey();
-                    var modalKey = shift.GetModalDuplicateKey();
-
-                    bool isDuplicate = model.ScheduleType == 1
-                        ? existingModalKeys.Contains(modalKey)
-                        : existingKeys.Contains(key);
-
-                    if (isDuplicate)
+                    foreach (var scheduledDay in scheduledDays)
                     {
-                        duplicatesSkipped++;
-                        continue;
-                    }
+                        DateTime? targetDate = MonthlyScheduleService.CalculateNthWeekdayOfMonth(
+                            monthStart, scheduledDay, model.MonthlyRecurringType);
 
-                    existingKeys.Add(key);
-                    existingModalKeys.Add(modalKey);
+                        if (targetDate == null) continue;
+                        if (targetDate.Value.Date < model.StartDate.Date) continue;
 
-                    if (hasGroup)
-                    {
-                        await using var conn = await _repo.CreateConnectionAsync(ct);
-                        int newGroupId = await _repo.InsertNewGroupScheduleAsync(conn, model.Client_id, ct);
-                        var insertedIds = await _repo.InsertMonthlyGroupShiftsAsync(
-                            conn, model.GroupScheduleId, newGroupId, targetDate.Value,
-                            existingKeys, existingModalKeys, ct);
-                        shiftsCreated += insertedIds.Count;
-                    }
-                    else
-                    {
-                        await using var conn = await _repo.CreateConnectionAsync(ct);
-                        long shiftId = await _repo.InsertShiftAndGetIdAsync(conn, shift, ct);
-                        shiftsCreated++;
+                        var shift = ScheduleShift.FromModel(model, targetDate.Value, noteText);
+                        var key = shift.GetDuplicateKey();
+                        var modalKey = shift.GetModalDuplicateKey();
 
-                        if (hasScanAreas)
-                            await _repo.CallProcessRecurringScanAreaAsync(conn, modelId, shiftId, ct);
+                        bool isDuplicate = model.ScheduleType == 1
+                            ? existingModalKeys.Contains(modalKey)
+                            : existingKeys.Contains(key);
+
+                        if (isDuplicate)
+                        {
+                            duplicatesSkipped++;
+                            continue;
+                        }
+
+                        existingKeys.Add(key);
+                        existingModalKeys.Add(modalKey);
+
+                        if (hasGroup)
+                        {
+                            await using var conn = await _repo.CreateConnectionAsync(ct);
+                            int newGroupId = await _repo.InsertNewGroupScheduleAsync(conn, model.Client_id, ct);
+                            var insertedIds = await _repo.InsertMonthlyGroupShiftsAsync(
+                                conn, model.GroupScheduleId, newGroupId, targetDate.Value,
+                                existingKeys, existingModalKeys, ct);
+                            shiftsCreated += insertedIds.Count;
+                        }
+                        else
+                        {
+                            await using var conn = await _repo.CreateConnectionAsync(ct);
+                            long shiftId = await _repo.InsertShiftAndGetIdAsync(conn, shift, ct);
+                            shiftsCreated++;
+
+                            if (hasScanAreas)
+                                await _repo.CallProcessRecurringScanAreaAsync(conn, modelId, shiftId, ct);
+                        }
                     }
                 }
 
-                // Monthly sets lastrundate to 1st of next month
                 await _repo.UpdateSingleModelLastRunDateAsync(modelId, ct);
             }
             else
@@ -388,21 +393,6 @@ public sealed class SchedulerJob
                 ErrorMessage = ex.Message
             };
         }
-    }
-
-    /// <summary>
-    /// Determine which day of the week a model is scheduled for (used by monthly lean path).
-    /// </summary>
-    private static DayOfWeek? GetScheduledDayOfWeek(ScheduleModel model)
-    {
-        if (model.Monday)    return DayOfWeek.Monday;
-        if (model.Tuesday)   return DayOfWeek.Tuesday;
-        if (model.Wednesday) return DayOfWeek.Wednesday;
-        if (model.Thursday)  return DayOfWeek.Thursday;
-        if (model.Friday)    return DayOfWeek.Friday;
-        if (model.Saturday)  return DayOfWeek.Saturday;
-        if (model.Sunday)    return DayOfWeek.Sunday;
-        return null;
     }
 
     /// <summary>
@@ -494,14 +484,17 @@ public sealed class SchedulerJob
             _logger.LogInformation("Model loading completed in {Elapsed:F1}s", phaseSw.Elapsed.TotalSeconds);
 
             // STEP 4: Load existing shift keys for duplicate detection
+            // Start from 1st of current month so monthly shifts created earlier
+            // this month (by existing SP or prior runs) are included in dedup.
             phaseSw.Restart();
+            var keyWindowStart = new DateTime(scheduleDateTime.Year, scheduleDateTime.Month, 1);
             var endDate = scheduleDateTime.AddDays(effectiveAdvanceDays + 1);
             var monthlyEndDate = scheduleDateTime.AddMonths(effectiveMonthlyMonths).AddDays(1);
             if (monthlyEndDate > endDate)
                 endDate = monthlyEndDate;
 
-            var existingKeys = await _repo.LoadExistingShiftKeysAsync(scheduleDateTime, endDate, ct);
-            var existingModalKeys = await _repo.LoadExistingModalShiftKeysAsync(scheduleDateTime, endDate, ct);
+            var existingKeys = await _repo.LoadExistingShiftKeysAsync(keyWindowStart, endDate, ct);
+            var existingModalKeys = await _repo.LoadExistingModalShiftKeysAsync(keyWindowStart, endDate, ct);
             phaseSw.Stop();
             _logger.LogInformation(
                 "Shift key loading completed in {Elapsed:F1}s (standard={Standard}, modal={Modal})",

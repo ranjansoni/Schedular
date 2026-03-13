@@ -145,114 +145,98 @@ public sealed class MonthlyScheduleService
 
             foreach (var model in models)
             {
-                // Determine which weekday this model is scheduled for
-                DayOfWeek? scheduledDay = GetScheduledDayOfWeek(model);
-                if (scheduledDay == null)
+                var scheduledDays = GetAllScheduledDays(model);
+                if (scheduledDays.Count == 0)
                 {
                     _logger.LogWarning("Monthly model {ModelId} has no day-of-week flag set, skipping", model.Id);
                     continue;
                 }
 
-                // Calculate the Nth occurrence of that weekday in this month
-                DateTime? targetDate = CalculateNthWeekdayOfMonth(
-                    monthStart, scheduledDay.Value, model.MonthlyRecurringType);
-
-                if (targetDate == null)
-                {
-                    _logger.LogWarning(
-                        "Could not calculate target date for model {ModelId}, month={Month:yyyy-MM}",
-                        model.Id, targetMonth);
-                    continue;
-                }
-
-                // Check: target date must be >= model's start date
-                // Mirrors: MonthlySchedular.sql line 130 — if(date(P_datetimein) >= date(p_recurringstartdate))
-                if (targetDate.Value.Date < model.StartDate.Date)
-                {
-                    result.DateBeforeStartSkipped++;
-                    continue;
-                }
-
-                // Build shift for duplicate check
-                var shift = ScheduleShift.FromModel(model, targetDate.Value, NoteText);
-                var key = shift.GetDuplicateKey();
-                var modalKey = shift.GetModalDuplicateKey();
                 string pattern = ShiftAuditEntry.BuildRecurringPattern(model);
 
-                // Same dual-key dedup as weekly:
-                //   ScheduleType=1 → modal-aware key (allow different models, block same model re-runs)
-                //   All others → standard key
-                bool isDuplicate = model.ScheduleType == 1
-                    ? existingModalKeys.Contains(modalKey)
-                    : existingKeys.Contains(key);
-
-                if (isDuplicate)
+                foreach (var scheduledDay in scheduledDays)
                 {
-                    result.DuplicatesSkipped++;
-                    auditEntries.Add(ShiftAuditEntry.Duplicate(runId, runDate, shift, model, "Monthly", pattern));
-                    continue;
-                }
+                    DateTime? targetDate = CalculateNthWeekdayOfMonth(
+                        monthStart, scheduledDay, model.MonthlyRecurringType);
 
-                // --- Overlap check (only for assigned employees at different locations) ---
-                var conflict = overlapDetector.CheckOverlap(
-                    model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut);
-
-                if (conflict.HasValue)
-                {
-                    var c = conflict.Value;
-                    string desc = $"Overlaps with ShiftId {c.ShiftId} at ClientId {c.ClientId} " +
-                                  $"({c.Start:HH:mm}-{c.End:HH:mm})";
-
-                    result.OverlapsBlocked++;
-                    auditEntries.Add(ShiftAuditEntry.Overlap(runId, runDate, shift, model, "Monthly", pattern, desc));
-                    conflicts.Add(new ShiftConflict
+                    if (targetDate == null) continue;
+                    if (targetDate.Value.Date < model.StartDate.Date)
                     {
-                        RunId              = runId,
-                        ModalId            = model.Id,
-                        EmployeeId         = model.EmployeeId,
-                        ClientId           = model.Client_id,
-                        DateTimeIn         = shift.DateTimeIn,
-                        DateTimeOut        = shift.DateTimeOut,
-                        ConflictingShiftId = c.ShiftId,
-                        ConflictingModalId = c.ModalId,
-                        ConflictingClientId = c.ClientId,
-                        ConflictDateTimeIn  = c.Start,
-                        ConflictDateTimeOut = c.End
-                    });
-                    continue;
-                }
+                        result.DateBeforeStartSkipped++;
+                        continue;
+                    }
 
-                existingKeys.Add(key);
-                existingModalKeys.Add(modalKey);
+                    var shift = ScheduleShift.FromModel(model, targetDate.Value, NoteText);
+                    var key = shift.GetDuplicateKey();
+                    var modalKey = shift.GetModalDuplicateKey();
 
-                // Register this shift in the overlap detector for subsequent checks
-                overlapDetector.RegisterShift(
-                    model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut, model.Id);
+                    bool isDuplicate = model.ScheduleType == 1
+                        ? existingModalKeys.Contains(modalKey)
+                        : existingKeys.Contains(key);
 
-                // Log audit entry as Created
-                auditEntries.Add(ShiftAuditEntry.Created(runId, runDate, shift, model, "Monthly", pattern));
+                    if (isDuplicate)
+                    {
+                        result.DuplicatesSkipped++;
+                        auditEntries.Add(ShiftAuditEntry.Duplicate(runId, runDate, shift, model, "Monthly", pattern));
+                        continue;
+                    }
 
-                // Track for lastrundate update — group by month start
-                if (!result.ProcessedModelsByMonth.TryGetValue(monthStart, out var monthModelIds))
-                {
-                    monthModelIds = new HashSet<int>();
-                    result.ProcessedModelsByMonth[monthStart] = monthModelIds;
-                }
-                monthModelIds.Add(model.Id);
+                    var conflict = overlapDetector.CheckOverlap(
+                        model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut);
 
-                // Categorize
-                if (model.HasGroupSchedule)
-                {
-                    groupModels.Add((model, targetDate.Value));
-                }
-                else if (modelsWithScanAreas.Contains(model.Id))
-                {
-                    scanAreaShifts.Add(shift);
-                    scanAreaModelIds.Add(model.Id);
-                }
-                else
-                {
-                    bulkShifts.Add(shift);
+                    if (conflict.HasValue)
+                    {
+                        var c = conflict.Value;
+                        string desc = $"Overlaps with ShiftId {c.ShiftId} at ClientId {c.ClientId} " +
+                                      $"({c.Start:HH:mm}-{c.End:HH:mm})";
+
+                        result.OverlapsBlocked++;
+                        auditEntries.Add(ShiftAuditEntry.Overlap(runId, runDate, shift, model, "Monthly", pattern, desc));
+                        conflicts.Add(new ShiftConflict
+                        {
+                            RunId              = runId,
+                            ModalId            = model.Id,
+                            EmployeeId         = model.EmployeeId,
+                            ClientId           = model.Client_id,
+                            DateTimeIn         = shift.DateTimeIn,
+                            DateTimeOut        = shift.DateTimeOut,
+                            ConflictingShiftId = c.ShiftId,
+                            ConflictingModalId = c.ModalId,
+                            ConflictingClientId = c.ClientId,
+                            ConflictDateTimeIn  = c.Start,
+                            ConflictDateTimeOut = c.End
+                        });
+                        continue;
+                    }
+
+                    existingKeys.Add(key);
+                    existingModalKeys.Add(modalKey);
+
+                    overlapDetector.RegisterShift(
+                        model.EmployeeId, model.Client_id, shift.DateTimeIn, shift.DateTimeOut, model.Id);
+
+                    auditEntries.Add(ShiftAuditEntry.Created(runId, runDate, shift, model, "Monthly", pattern));
+
+                    if (!result.ProcessedModelsByMonth.TryGetValue(monthStart, out var monthModelIds))
+                    {
+                        monthModelIds = new HashSet<int>();
+                        result.ProcessedModelsByMonth[monthStart] = monthModelIds;
+                    }
+                    monthModelIds.Add(model.Id);
+
+                    if (model.HasGroupSchedule)
+                    {
+                        groupModels.Add((model, targetDate.Value));
+                    }
+                    else if (modelsWithScanAreas.Contains(model.Id))
+                    {
+                        scanAreaShifts.Add(shift);
+                        scanAreaModelIds.Add(model.Id);
+                    }
+                    else
+                    {
+                        bulkShifts.Add(shift);
+                    }
                 }
             }
 
@@ -396,19 +380,20 @@ public sealed class MonthlyScheduleService
     }
 
     /// <summary>
-    /// Determine which day of the week this monthly model is scheduled for.
-    /// Monthly models typically have exactly one day flag set.
-    /// Returns null if no day flag is set.
+    /// Return all days of the week this monthly model is scheduled for.
+    /// When "First Week" + all days are selected, we need shifts for every day
+    /// in the Nth week — not just the first matching day.
     /// </summary>
-    private static DayOfWeek? GetScheduledDayOfWeek(ScheduleModel model)
+    internal static List<DayOfWeek> GetAllScheduledDays(ScheduleModel model)
     {
-        if (model.Monday)    return DayOfWeek.Monday;
-        if (model.Tuesday)   return DayOfWeek.Tuesday;
-        if (model.Wednesday) return DayOfWeek.Wednesday;
-        if (model.Thursday)  return DayOfWeek.Thursday;
-        if (model.Friday)    return DayOfWeek.Friday;
-        if (model.Saturday)  return DayOfWeek.Saturday;
-        if (model.Sunday)    return DayOfWeek.Sunday;
-        return null;
+        var days = new List<DayOfWeek>();
+        if (model.Sunday)    days.Add(DayOfWeek.Sunday);
+        if (model.Monday)    days.Add(DayOfWeek.Monday);
+        if (model.Tuesday)   days.Add(DayOfWeek.Tuesday);
+        if (model.Wednesday) days.Add(DayOfWeek.Wednesday);
+        if (model.Thursday)  days.Add(DayOfWeek.Thursday);
+        if (model.Friday)    days.Add(DayOfWeek.Friday);
+        if (model.Saturday)  days.Add(DayOfWeek.Saturday);
+        return days;
     }
 }
