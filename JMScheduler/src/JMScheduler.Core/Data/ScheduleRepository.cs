@@ -251,7 +251,8 @@ public sealed class ScheduleRepository
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  Client_id = @ClientId
+            WHERE  IsActive = 1
+              AND  Client_id = @ClientId
               AND  datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
@@ -275,7 +276,8 @@ public sealed class ScheduleRepository
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  ModalId = @ModelId
+            WHERE  IsActive = 1
+              AND  ModalId = @ModelId
               AND  datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
@@ -334,7 +336,8 @@ public sealed class ScheduleRepository
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  datetimein >= @StartDate
+            WHERE  IsActive = 1
+              AND  datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);
@@ -372,7 +375,8 @@ public sealed class ScheduleRepository
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  datetimein >= @StartDate
+            WHERE  IsActive = 1
+              AND  datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);

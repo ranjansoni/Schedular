@@ -316,6 +316,7 @@ public sealed class SchedulerJob
 
                         if (targetDate == null) continue;
                         if (targetDate.Value.Date < model.StartDate.Date) continue;
+                        if (!model.HasNoEndDate && targetDate.Value.Date > model.EndDate.Date) continue;
 
                         var shift = ScheduleShift.FromModel(model, targetDate.Value, noteText);
                         var key = shift.GetDuplicateKey();

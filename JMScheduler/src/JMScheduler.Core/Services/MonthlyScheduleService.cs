@@ -166,6 +166,13 @@ public sealed class MonthlyScheduleService
                         continue;
                     }
 
+                    // Check if target date exceeds the model's end date
+                    if (!model.HasNoEndDate && targetDate.Value.Date > model.EndDate.Date)
+                    {
+                        result.DateBeforeStartSkipped++; // Reuse counter for "out of range" dates
+                        continue;
+                    }
+
                     var shift = ScheduleShift.FromModel(model, targetDate.Value, NoteText);
                     var key = shift.GetDuplicateKey();
                     var modalKey = shift.GetModalDuplicateKey();
