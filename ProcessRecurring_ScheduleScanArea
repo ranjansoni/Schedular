@@ -1,0 +1,70 @@
+
+CREATE DEFINER=`jmadmin`@`%` PROCEDURE `ProcessRecurring_ScheduleScanArea`(
+p_modalid int(11),
+p_lastinseretedshiftid int(11)
+)
+BEGIN
+
+declare p_employeeid  int(11);
+declare P_count_employeeclaim int(11);
+declare P_totalcount_employeeclaim int(11);
+
+declare P_count_schedulescan int(11);
+declare P_count_schedulescantask int(11);
+declare P_totalcount_schedulescan int(11);
+declare P_totalcount_schedulescantask int(11);
+declare p_scheduleshiftscandetailmodelId int(11);
+declare p_lastinsereted_scheduleshiftscandetailmodelId int(11);
+
+ -- Schdule Scan Start
+ -- select 1;
+set p_employeeid = (select employeeid from clientscheduleshift where id =  p_lastinseretedshiftid);
+-- select 2;
+  if((select count(1) from scheduleshiftscandetailmodel where ModalId = P_modalid > 0 and EmployeeId = p_employeeid)) then 
+                begin 
+                
+                set P_count_schedulescan  =0;
+				set P_count_schedulescantask  =0;
+				set P_totalcount_schedulescan  =(select count(1) from scheduleshiftscandetailmodel where ModalId = P_modalid  and EmployeeId = p_employeeid);
+				set P_totalcount_schedulescantask  =0;
+                
+                
+                while(P_totalcount_schedulescan > 0) do
+                begin
+					set p_scheduleshiftscandetailmodelId= (select id from scheduleshiftscandetailmodel where  ModalId = P_modalid  and EmployeeId = p_employeeid  limit 1 offset P_count_schedulescan);
+					INSERT INTO `scheduleshiftscandetail` (`ShiftId`,`ClientId`,`CompanyId`,`ScanType`,`ClientAreaId`,`ClientAreaWorkTemplateId`,`EmployeeId`,
+								`DateCreated`,`DateModified`,`TimecardId`,`IsActive`,`Status`,`StartTime`,`EndTime`,`Minutes`,`Sqft`,`Title`,`Description`)
+								select p_lastinseretedshiftid, ClientId,CompanyId,ScanType, ClientAreaId, ClientAreaWorkTemplateId, EmployeeId,now(),now(),TimecardId,IsActive,
+                                Status,StartTime,EndTime,Minutes,Sqft,Title,Description
+                                from scheduleshiftscandetailmodel  where id = p_scheduleshiftscandetailmodelId;
+                               
+							set p_lastinsereted_scheduleshiftscandetailmodelId =  last_insert_id();
+                        	set P_count_schedulescantask  =0;
+                            set P_totalcount_schedulescantask  =(select count(1) from scheduleshiftscantaskdetailmodel where scheduleshiftscandetailmodelId = p_scheduleshiftscandetailmodelId);
+                            
+                             while(P_totalcount_schedulescantask > 0) do
+							begin
+								INSERT INTO `scheduleshiftscantaskdetail`
+											(`ScheduleShiftScanId`,`DateCreated`,`DateModified`,`Title`,`Description`,
+											`IsActive`,`IsMandatory`,`OrderNumber`,`Status`,`CompletionTime`,`Latitude`,`Longitude`)
+								select p_lastinsereted_scheduleshiftscandetailmodelId, `DateCreated`,`DateModified`,`Title`,`Description`,
+											`IsActive`,`IsMandatory`,`OrderNumber`,`Status`,`CompletionTime`,`Latitude`,`Longitude`
+								from scheduleshiftscantaskdetailmodel where scheduleshiftscandetailmodelId = p_scheduleshiftscandetailmodelId limit 1 offset P_count_schedulescantask;
+								
+                                set P_count_schedulescantask = P_count_schedulescantask +1;
+								set P_totalcount_schedulescantask = P_totalcount_schedulescantask -1;
+							end;
+							end while;
+				set P_count_schedulescan = P_count_schedulescan +1;
+                set P_totalcount_schedulescan = P_totalcount_schedulescan -1;
+                end;
+                end while;
+                
+				end;
+                end if;
+ 
+
+               
+                -- Schdule Scan end
+
+END

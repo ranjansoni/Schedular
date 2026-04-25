@@ -1,0 +1,35 @@
+CREATE DEFINER=`jmadmin`@`%` PROCEDURE `ClientShiftModalEditable`(IN ScheduleDateTime datetime)
+begin
+
+DECLARE P_nextscheduledate datetime;
+DECLARE P_modalid INT;
+-- drop table ModalEditable;
+
+CREATE TABLE IF NOT EXISTS ModalEditable (
+	modalid int
+ )  ENGINE=INNODB;
+ 
+ insert into ModalEditable
+ select Id from clientschedulemodel where isActive=1 and recurringon >1 and IsModelReset = 1;
+ 
+ while ((Select count(*) from ModalEditable) > 0) Do
+ 
+ select modalid into P_modalid from ModalEditable limit 1;
+
+ select scheduledate into P_nextscheduledate from job_clientschedulefunctiondataHistory where date(scheduledate) <now() and modal_id=P_modalid order by scheduledate desc limit 1;
+if(P_nextscheduledate IS NOT NULL)then
+	begin
+    
+    update job_ClientscheduleShiftnextrunStatus set Nextscheduledate=P_nextscheduledate,ModalEditmode=1 where modal_id=P_modalid;
+    end;
+    else 
+    begin
+      select UpdateDate into P_nextscheduledate from clientschedulemodel where Id=P_modalid;
+      update job_ClientscheduleShiftnextrunStatus set Nextscheduledate=P_nextscheduledate,ModalEditmode=1 where modal_id=P_modalid;
+    end;
+end if;
+delete from ModalEditable where modalid =P_modalid;
+
+END WHILE;
+drop table ModalEditable;
+END

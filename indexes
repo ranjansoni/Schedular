@@ -1,0 +1,54 @@
+SHOW INDEX FROM clientscheduleshift;
+'clientscheduleshift','0','PRIMARY','1','Id','A','4574903',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','CreateUser_id','1','CreateUser_id','A','856',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','UpdateUser_id','1','UpdateUser_id','A','817',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','Client_id','1','Client_id','A','8427',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','Employeetimecard_id','1','Employeetimecard_id','A','1690719',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','clientscheduleshift_breakdetail_idx','1','BreakDetailID','A','137',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','clientscheduleshift_GroupScheduleId_idx','1','GroupScheduleId','A','181606',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','IX_ModalId','1','ModalId','A','40175',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_ModelGroupId','1','ModalGroupId','A','399',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_EmployeeId','1','employeeid','A','14323',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_ClientId','1','Client_id','A','12036',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_IsActive_CompanyId','1','IsActive','A','1',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_IsActive_CompanyId','2','CompanyID','A','653',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_ShiftGroupId','1','GroupScheduleId','A','191100',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','index_nameIX_IsActive','1','IsActive','A','1',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','UUID_IX','1','UUID','A','3942',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','FromDate_IX','1','fromdate','A','2718',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','company_ix','1','CompanyID','A','492',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','GroupScheduleId_ix','1','GroupScheduleId','A','205567',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_clientscheduleshift_datetimein','1','datetimein','A','192007',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_shift_alert','1','IsLateInAlert','A','1',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_shift_alert','2','IsLateInAlertSent','A','4',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_shift_alert','3','Id','A','4517707',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_modalid_todate_id','1','ModalId','A','47331',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_modalid_todate_id','2','todate','A','4044861',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_modalid_todate_id','3','Id','A','4599971',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_alert_scan','1','IsLateIn','A','2',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_alert_scan','2','IsEarlyOut','A','7',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_alert_scan','3','Id','A','4477014',NULL,NULL,'','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_todate_modalid_id','1','todate','A','3416',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_todate_modalid_id','2','ModalId','A','3907384',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientscheduleshift','1','idx_cs_todate_modalid_id','3','Id','A','4599971',NULL,NULL,'','BTREE','','','YES',NULL
+
+SHOW INDEX FROM clientschedulemodel;
+'clientschedulemodel','0','PRIMARY','1','Id','A','22474',NULL,NULL,'','BTREE','','','YES',NULL
+'clientschedulemodel','1','CreateUser_id','1','CreateUser_id','A','571',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientschedulemodel','1','UpdateUser_id','1','UpdateUser_id','A','484',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientschedulemodel','1','Client_id','1','Client_id','A','7179',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientschedulemodel','1','clientschedulemodel_breakdetail_idx','1','BreakDetailID','A','85',NULL,NULL,'YES','BTREE','','','YES',NULL
+'clientschedulemodel','1','index_nameIX_GroupScheduleId','1','GroupScheduleId','A','1130',NULL,NULL,'YES','BTREE','','','YES',NULL
+
+SHOW INDEX FROM employeescheduleshiftclaim;
+
+
+'employeescheduleshiftclaim','0','PRIMARY','1','ID','A','25132',NULL,NULL,'','BTREE','','','YES',NULL
+'employeescheduleshiftclaim','1','employeescheduleshiftclaim_employeeid_idx','1','EmployeeID','A','334',NULL,NULL,'','BTREE','','','YES',NULL
+'employeescheduleshiftclaim','1','employeescheduleshiftclaim_clientscheduleshift_idx','1','ClientScheduleShiftID','A','16196',NULL,NULL,'','BTREE','','','YES',NULL
+'employeescheduleshiftclaim','1','employeescheduleshiftclaim_companydetail_idx','1','CompanyID','A','81',NULL,NULL,'','BTREE','','','YES',NULL
+'employeescheduleshiftclaim','1','employeescheduleshiftclaim_dynamicindicatordetail_idx','1','JobclassID','A','176',NULL,NULL,'','BTREE','','','YES',NULL
+
+
+SHOW INDEX FROM job_clientschedulemodel;
+'job_clientschedulemodel','0','PRIMARY','1','Id','A','0',NULL,NULL,'','BTREE','','','YES',NULL

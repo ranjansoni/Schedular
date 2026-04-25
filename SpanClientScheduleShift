@@ -1,0 +1,374 @@
+CREATE DEFINER=`jmadmin`@`%` FUNCTION `SpanClientScheduleShift`(ScheduleId INT, rundate DateTime, RecurInterval Int,Rundays int) RETURNS int
+BEGIN
+
+Declare temptInterval Int;
+Declare DaysToSubtract Int;
+
+Declare P_scheduledate datetime;
+Declare P_fromdate datetime;
+Declare P_enddate datetime;
+
+Declare P_return int;
+declare P_lastrundate datetime;
+declare P_firstoccurrence datetime;
+declare P_nextoccurrence datetime;
+Declare P_modalval Int;
+
+declare P_Countloop int;
+declare P_newschedudate datetime;
+
+DECLARE P_sunday tinyint(1);
+DECLARE P_monday tinyint(1);
+DECLARE P_tuesday tinyint(1);
+DECLARE P_wednesday tinyint(1);
+DECLARE P_thursday tinyint(1);
+DECLARE P_friday tinyint(1);
+DECLARE P_saturday tinyint(1);
+
+declare P_checkdate datetime;
+declare P_restrictschedule datetime;
+
+DECLARE runinverval int; 
+DECLARE p_modaleditmode int; 
+DECLARE P_loopcounter int; 
+
+set runinverval =(Rundays / (7 * RecurInterval));
+set P_loopcounter = runinverval + 1;
+
+if (RecurInterval = 1) then
+   begin 
+   
+	  select date(datetimein) into P_nextoccurrence from clientscheduleshift where ModalId=ScheduleId ORDER BY datetimein DESC LIMIT 1;
+        if(P_nextoccurrence IS NULL)then
+        begin
+          return 0;
+       end;
+	  end if;
+      
+	  if(date(rundate)> date(P_nextoccurrence))then
+		begin
+		 return 0;
+	 	end;
+	    end if;
+    end;
+else 
+
+begin
+	if((select count(*) from job_clientscheduletempfunctiondata where modal_id = ScheduleId)= 0) then
+		begin
+		
+	    select startdate,LastRunDate,sunday,monday,tuesday,wednesday,thursday,friday,saturday 
+        into P_firstoccurrence,P_lastrundate,P_sunday,P_monday,P_tuesday,P_wednesday,P_thursday,P_friday,P_saturday 
+        from clientschedulemodel where id =ScheduleId;-- ScheduleId;
+        		
+		if(P_lastrundate='0001-01-01 00:00:00' or P_lastrundate is null) then
+			begin
+		    set P_firstoccurrence =P_firstoccurrence;
+             set P_restrictschedule =DATE_ADD(now() , INTERVAL -1 DAY);
+			end;
+		else 
+		begin 
+		  select Nextscheduledate,ModalEditmode into  P_nextoccurrence,p_modaleditmode from job_ClientscheduleShiftnextrunStatus where modal_id = ScheduleId limit 1;
+			set P_checkdate =P_nextoccurrence;
+			set P_firstoccurrence =P_checkdate;
+            
+            select date(datetimein) into P_restrictschedule from clientscheduleshift where ModalId=ScheduleId and IsActive = 1 ORDER BY datetimein DESC LIMIT 1;
+            if(P_restrictschedule IS NULL)then
+            begin
+            /* 15March25
+              set P_restrictschedule =DATE_ADD(now() , INTERVAL -1 DAY);
+              set P_checkdate =now();
+			  set P_firstoccurrence =now();
+              */
+               Select startdate into @l_recurringStartdate from clientschedulemodel where Id =ScheduleId;
+             set P_restrictschedule =DATE_ADD(date(@l_recurringStartdate) , INTERVAL -1 DAY);
+              set P_checkdate = date(@l_recurringStartdate);
+			  set P_firstoccurrence =date(@l_recurringStartdate);
+            end;
+            else 
+            begin 
+              	SELECT jobs.scheduledate into P_nextoccurrence  FROM job_clientschedulefunctiondataHistory jobs where jobs.modal_id=ScheduleId and 
+				date(jobs.scheduledate) in(select date(datetimein) from clientscheduleshift where ModalId=jobs.modal_id and IsActive = 1)
+				ORDER BY jobs.scheduledate DESC LIMIT 1;
+                set P_checkdate =P_nextoccurrence;
+			    set P_firstoccurrence =P_nextoccurrence;
+            end; 
+            end if;
+            
+	      end;
+		end if; 
+
+	set temptInterval = RecurInterval;
+
+	While (P_loopcounter>= 1) do
+		set DaysToSubtract = 7 * temptInterval *1;
+
+		-- set P_scheduledate= DATE_ADD(FirstOccurrence, INTERVAL DaysToSubtract DAY);
+		set P_Countloop =7;
+		set P_newschedudate =DATE_ADD(P_firstoccurrence, INTERVAL (DaysToSubtract)*runinverval DAY);
+
+		if(runinverval =0)then
+			begin
+			set P_newschedudate =P_firstoccurrence;
+			end;
+		end if;
+
+	While (P_Countloop>= 1) do
+
+		if(P_sunday = true and lower(DAYNAME(P_newschedudate)) = 'sunday') then
+		  begin
+			 if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+			else
+               begin
+				  if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+               
+              end;
+              end if;
+			   
+			  if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+			  begin
+				 insert into job_clientscheduletempfunctiondataweekly 
+				 select ScheduleId,P_newschedudate,P_loopcounter;
+			  end;
+			  end if;
+            
+		 end;
+		end if;
+		if(P_monday = true and lower(DAYNAME(P_newschedudate)) = 'monday') then
+		begin
+             if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+                else
+               begin
+			    if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+              end;
+              end if;
+                           
+          if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+          begin
+             insert into job_clientscheduletempfunctiondataweekly 
+             select ScheduleId,P_newschedudate,P_loopcounter;
+          end;
+          end if;
+           
+		end;
+		end if;
+		if(P_tuesday = true and lower(DAYNAME(P_newschedudate)) = 'tuesday') then
+		begin
+        
+          if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+                else
+               begin
+			   if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+              end;
+              end if;
+
+          if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+          begin
+             insert into job_clientscheduletempfunctiondataweekly 
+             select ScheduleId,P_newschedudate,P_loopcounter;
+          end;
+          end if;
+           
+		end;
+		end if;
+		if(P_wednesday = true and lower(DAYNAME(P_newschedudate)) = 'wednesday') then
+		begin
+        
+           if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+                else
+               begin
+			    if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+             end;
+		  end if;
+           
+          if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+          begin
+             insert into job_clientscheduletempfunctiondataweekly 
+             select ScheduleId,P_newschedudate,P_loopcounter;
+          end;
+          end if;
+           
+		end;
+		end if; 
+		 if(P_thursday = true and lower(DAYNAME(P_newschedudate)) = 'thursday') then
+		begin
+        
+         if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+                else
+               begin
+			    if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+             end;
+		  end if;
+           
+          if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+          begin
+             insert into job_clientscheduletempfunctiondataweekly 
+             select ScheduleId,P_newschedudate,P_loopcounter;
+          end;
+          end if;
+           
+		end;
+		end if; 
+		 if(P_friday = true and lower(DAYNAME(P_newschedudate)) = 'friday') then
+		  begin
+          
+            if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+					 end;
+					end if;
+                end;
+                else
+               begin
+			   if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+             end;
+		  end if;
+			   
+			  if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+			  begin
+				 insert into job_clientscheduletempfunctiondataweekly 
+				 select ScheduleId,P_newschedudate,P_loopcounter;
+			  end;
+			  end if;
+		 end;
+		end if; 
+
+	   if(P_saturday = true and lower(DAYNAME(P_newschedudate)) = 'saturday') then
+		begin
+		 
+          if(p_modaleditmode >0)then
+               begin
+				   if(date(P_newschedudate)>date(now()))then
+					  begin
+					  insert into job_clientscheduletempfunctiondata
+					  select ScheduleId,P_newschedudate;
+				   end;
+				  end if;
+                end;
+                else
+               begin
+			    if(date(P_newschedudate)>date(P_restrictschedule))then
+				  begin
+					insert into job_clientscheduletempfunctiondata
+					select ScheduleId,P_newschedudate;
+				  end;
+				  end if;
+             end;
+		  end if;
+
+          if ((select count(*) from job_clientscheduletempfunctiondataweekly where modal_id = ScheduleId and Weekcount=P_loopcounter)= 0)then
+          begin
+             insert into job_clientscheduletempfunctiondataweekly 
+             select ScheduleId,P_newschedudate,P_loopcounter;
+          end;
+          end if;
+          
+		 end;
+		end if; 
+
+		 set P_newschedudate =DATE_ADD(P_newschedudate, INTERVAL 1 DAY);
+		 set P_Countloop =P_Countloop-1;
+
+		END WHILE;
+
+			set runinverval =runinverval-1;
+			set P_loopcounter =P_loopcounter -1;
+		END WHILE;
+		  end;
+		 end if;
+         
+         insert into job_clientschedulefunctiondataHistory
+         select job1.modal_id,job1.scheduledate,Weekcount from job_clientscheduletempfunctiondataweekly job1
+     where date(job1.scheduledate) not in(select date(scheduledate) from job_clientschedulefunctiondataHistory where modal_id=job1.modal_id);
+        
+         
+  SELECT modal_id into P_modalval FROM job_Clientscheduletempfunctiondata where modal_id=ScheduleId and date(scheduledate)=Date(rundate) limit 1;
+  if(P_modalval IS NOT NULL)then
+	begin
+        set P_return =0;
+		-- return P_return;
+	end;
+	else 
+	begin
+     set P_return =1;
+	  -- return P_return;
+	  end;
+  end if;
+
+   end;
+  end if;
+   RETURN P_return;
+END
