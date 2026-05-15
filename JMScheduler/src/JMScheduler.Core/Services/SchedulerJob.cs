@@ -192,7 +192,7 @@ public sealed class SchedulerJob
                     var targetDate = now.Date.AddDays(dayOffset);
 
                     if (!model.IsScheduledForDay(targetDate.DayOfWeek)) continue;
-                    if (model.StartDate.Date > now.Date) continue;
+                    if (targetDate < model.StartDate.Date) continue;  // Fixed: compare targetDate vs StartDate
                     if (!model.HasNoEndDate && model.EndDate.Date < targetDate.Date) continue;
 
                     if (model.IsMultiWeek && multiWeekValidDates != null
