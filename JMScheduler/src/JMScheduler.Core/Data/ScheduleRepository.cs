@@ -331,13 +331,21 @@ public sealed class ScheduleRepository
     public async Task<HashSet<string>> LoadExistingShiftKeysAsync(
         DateTime startDate, DateTime endDate, CancellationToken ct)
     {
+        //const string sql = @"
+        //    SELECT CONCAT(Client_id, '|', employeeid, '|',
+        //                  DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
+        //                  DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
+        //    FROM   clientscheduleshift
+        //    WHERE  IsActive = 1
+        //      AND  datetimein >= @StartDate
+        //      AND  datetimein <= @EndDate";
+
         const string sql = @"
             SELECT CONCAT(Client_id, '|', employeeid, '|',
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  IsActive = 1
-              AND  datetimein >= @StartDate
+            WHERE  datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);
@@ -370,13 +378,21 @@ public sealed class ScheduleRepository
     public async Task<HashSet<string>> LoadExistingModalShiftKeysAsync(
         DateTime startDate, DateTime endDate, CancellationToken ct)
     {
+        //const string sql = @"
+        //    SELECT CONCAT(ModalId, '|', Client_id, '|', employeeid, '|',
+        //                  DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
+        //                  DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
+        //    FROM   clientscheduleshift
+        //    WHERE  IsActive = 1
+        //      AND  datetimein >= @StartDate
+        //      AND  datetimein <= @EndDate";
+
         const string sql = @"
             SELECT CONCAT(ModalId, '|', Client_id, '|', employeeid, '|',
                           DATE_FORMAT(datetimein, '%Y-%m-%d %H:%i'), '|',
                           DATE_FORMAT(datetimeout, '%Y-%m-%d %H:%i'))
             FROM   clientscheduleshift
-            WHERE  IsActive = 1
-              AND  datetimein >= @StartDate
+            WHERE    datetimein >= @StartDate
               AND  datetimein <= @EndDate";
 
         await using var conn = await _dbFactory.CreateConnectionAsync(ct);
