@@ -165,6 +165,11 @@ public sealed class MonthlyScheduleService
                         result.DateBeforeStartSkipped++;
                         continue;
                     }
+                    if (!model.HasNoEndDate && targetDate.Value.Date > model.EndDate.Date)
+                    {
+                        result.DateBeforeStartSkipped++;
+                        continue;
+                    }
 
                     var shift = ScheduleShift.FromModel(model, targetDate.Value, NoteText);
                     var key = shift.GetDuplicateKey();

@@ -115,7 +115,7 @@ public sealed class WeeklyScheduleService
             // Filter models eligible for this day
             var eligibleModels = models
                 .Where(m => m.IsScheduledForDay(dayOfWeek))
-                .Where(m => m.StartDate.Date <= DateTime.Now.Date)
+                .Where(m => targetDate.Date >= m.StartDate.Date)
                 .Where(m => m.HasNoEndDate || m.EndDate.Date >= targetDate.Date)
                 .ToList();
 

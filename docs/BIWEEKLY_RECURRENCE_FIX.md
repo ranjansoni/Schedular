@@ -134,6 +134,26 @@ The `JMScheduler.Core.Tests` project covers:
 - Incremental one-day generation with no tracking dependency.
 - Rejection of dates in the alternate, incorrect weeks.
 
+## Upstream reconciliation and sandbox validation
+
+The latest `janitorialmanager/ShiftScheduler` `main` branch was merged before
+publishing this fix. The merge retained these upstream protections:
+
+- Weekly and single-model runs compare each target date with the model start
+  date, allowing future-starting models to generate once their date enters the
+  processing window.
+- Monthly generation rejects dates beyond a finite model end date.
+- Existing-shift duplicate queries retain the production behavior that prevents
+  inactive historical rows from being recreated.
+
+After the merge, the full solution built in Release configuration with no
+warnings or errors, and all nine recurrence tests passed.
+
+The fixed API was also run against the sandbox with `AdvanceDays = 1`. Model
+`62974`, whose tracking date was stale at June 13, generated the due August 22
+shift. Re-running the same request created no additional shift and reported one
+duplicate, confirming idempotency.
+
 ## Known parity gap outside this fix
 
 The original `SpanClientScheduleShift` function inserted generated cycle dates

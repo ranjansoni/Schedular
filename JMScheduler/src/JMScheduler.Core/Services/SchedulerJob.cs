@@ -181,7 +181,7 @@ public sealed class SchedulerJob
                     var targetDate = now.Date.AddDays(dayOffset);
 
                     if (!model.IsScheduledForDay(targetDate.DayOfWeek)) continue;
-                    if (model.StartDate.Date > now.Date) continue;
+                    if (targetDate.Date < model.StartDate.Date) continue;
                     if (!model.HasNoEndDate && model.EndDate.Date < targetDate.Date) continue;
 
                     if (model.IsMultiWeek && multiWeekValidDates != null
@@ -305,6 +305,7 @@ public sealed class SchedulerJob
 
                         if (targetDate == null) continue;
                         if (targetDate.Value.Date < model.StartDate.Date) continue;
+                        if (!model.HasNoEndDate && targetDate.Value.Date > model.EndDate.Date) continue;
 
                         var shift = ScheduleShift.FromModel(model, targetDate.Value, noteText);
                         var key = shift.GetDuplicateKey();
