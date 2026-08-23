@@ -177,14 +177,9 @@ public sealed class SchedulerJob
                     var (anchor, restriction) = _multiWeekCalc.ResolveAnchorAndRestriction(
                         model, trackStatus, lastShift, lastHistory);
                     multiWeekValidDates = _multiWeekCalc.CalculateValidDates(
-                        model,
-                        windowStartDate: now.Date,
-                        restrictionDate: restriction,
-                        advanceDays: effectiveAdvanceDays);
+                        model, anchor, restriction, effectiveAdvanceDays);
 
-                    _logger.LogInformation(
-                        "Multi-week model: {Count} valid dates computed (anchor={Anchor:yyyy-MM-dd}, windowStart={WindowStart:yyyy-MM-dd})",
-                        multiWeekValidDates.Count, anchor, now.Date);
+                    _logger.LogInformation("Multi-week model: {Count} valid dates computed", multiWeekValidDates.Count);
                 }
 
                 var fastPathShifts = new List<ScheduleShift>();

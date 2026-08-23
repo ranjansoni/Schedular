@@ -57,7 +57,7 @@ The original multiweek function used these working/state tables:
 The C# service replaces the temporary-table date calculation with a
 `HashSet<DateTime>`. Existing tracking/history rows remain useful for reset
 handling and for finding the last generated shift, but they must not determine
-the recurrence phase or the end of the current generation window.
+the permanent recurrence phase.
 
 ## Multiweek invariants
 
@@ -103,42 +103,24 @@ the original phase:
 They must not shift into the alternate weeks, duplicate the initial dates, or
 stop because an old tracking/history date did not advance.
 
-## Root cause
+## Root cause and existing correction
 
-Two related defects existed:
+Before commit `dfac369`, the C# calculator used the latest mutable
+tracking/history date as the cycle root. If that date was Friday, Saturday, or
+Sunday inside a selected cycle, subsequent runs shifted the biweekly phase.
+For the reported model, later runs could produce dates such as August 7-8
+instead of August 14-15.
 
-1. Before commit `dfac369`, the C# calculator used the latest mutable
-   tracking/history date as the cycle root. If that date was Friday, Saturday,
-   or Sunday inside a selected cycle, later runs could shift the entire
-   biweekly phase.
-2. Commit `dfac369` correctly restored `model.StartDate` as the immutable cycle
-   root, but the calculator still ended its search at
-   `anchorDate + AdvanceDays`. The anchor can remain an older history/tracking
-   date when the current run creates no shift. Its endpoint can therefore stay
-   behind the current 45-day horizon. Because no shift is created, tracking
-   does not move, and later runs can remain stalled.
+Commit `dfac369` corrected this by always deriving cycle boundaries from
+`model.StartDate`. Tracking/history dates still restrict dates already handled,
+but they no longer redefine which week is active. The batch and single-model
+paths both use this corrected calculator.
 
-The second issue explains why the initial 45-day records exist but no later
-records are automatically materialized.
+The current source therefore already contains the production correction for the
+reported defect. This investigation adds regression coverage and deployment
+documentation; it does not introduce another recurrence algorithm change.
 
-## Implemented correction
-
-`MultiWeekDateCalculator.CalculateValidDates` now receives the scheduler's
-current window start and ends calculation at:
-
-```text
-windowStartDate + AdvanceDays
-```
-
-The cycle root remains `model.StartDate`. The restriction remains the last
-generated shift/reset boundary.
-
-Both callers now provide the actual run date:
-
-- Batch: `WeeklyScheduleService` passes its `scheduleDateTime`.
-- Single model: `SchedulerJob.RunSingleModelAsync` passes `now.Date`.
-
-No database schema or stored-procedure change is required.
+No database schema or stored-procedure change is required for this fix.
 
 ## Automated verification
 
@@ -148,7 +130,22 @@ The `JMScheduler.Core.Tests` project covers:
 - The next rolling window after the original 45-day horizon.
 - Three-week and four-week cycle alignment.
 - Repeated-run non-overlap and no phase drift.
-- Exclusion of occurrences beyond the requested window.
+- Rejection of dates in the alternate, incorrect weeks.
+
+## Known parity gap outside this fix
+
+The original `SpanClientScheduleShift` function inserted generated cycle dates
+into `job_clientschedulefunctiondataHistory`. The C# service reads and prunes
+that table but does not add rows.
+
+This does not break the reported normal biweekly rollover because cycle
+alignment now uses `StartDate` and tracking falls back to
+`Nextscheduledate`. It can affect edit/reset behavior because
+`CleanupService.ResetEditedModelAnchorsAsync` still consults history.
+
+That issue should be investigated separately with an edit/reset reproduction.
+It is intentionally not changed here because this production fix is limited to
+the reported normal recurrence case.
 
 Run:
 

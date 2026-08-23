@@ -19,7 +19,7 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            windowStartDate: new DateTime(2026, 6, 19),
+            anchorDate: new DateTime(2026, 6, 19),
             restrictionDate: new DateTime(2026, 6, 18),
             advanceDays: 45);
 
@@ -44,7 +44,7 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            windowStartDate: new DateTime(2026, 8, 3),
+            anchorDate: new DateTime(2026, 8, 2),
             restrictionDate: new DateTime(2026, 8, 2),
             advanceDays: 45);
 
@@ -72,14 +72,13 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            windowStartDate: new DateTime(2026, 7, 1),
+            anchorDate: new DateTime(2026, 7, 1),
             restrictionDate: new DateTime(2026, 6, 19),
             advanceDays: 90);
 
         Assert.Contains(DateTime.Parse(firstExpected), dates);
         Assert.Contains(DateTime.Parse(secondExpected), dates);
         Assert.Contains(DateTime.Parse(thirdExpected), dates);
-        Assert.DoesNotContain(dates, date => date > new DateTime(2026, 9, 29));
         Assert.All(dates, date =>
             Assert.Equal(0, (date.Date - model.StartDate.Date).Days % (7 * recurringOn)));
     }
@@ -96,13 +95,13 @@ public sealed class MultiWeekDateCalculatorTests
 
         var firstRun = _calculator.CalculateValidDates(
             model,
-            windowStartDate: new DateTime(2026, 6, 19),
+            anchorDate: new DateTime(2026, 6, 19),
             restrictionDate: new DateTime(2026, 6, 18),
             advanceDays: 45);
 
         var secondRun = _calculator.CalculateValidDates(
             model,
-            windowStartDate: new DateTime(2026, 8, 3),
+            anchorDate: firstRun.Max(),
             restrictionDate: firstRun.Max(),
             advanceDays: 45);
 

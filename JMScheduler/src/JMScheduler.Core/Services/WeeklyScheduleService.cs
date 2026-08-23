@@ -104,8 +104,7 @@ public sealed class WeeklyScheduleService
 
         // Pre-compute multi-week valid dates for all multi-week models (in-memory)
         var multiWeekValidDates = await PrecomputeMultiWeekDatesAsync(
-            models.Where(m => m.IsMultiWeek).ToList(), multiWeekTracking,
-            scheduleDateTime, effectiveAdvanceDays, ct);
+            models.Where(m => m.IsMultiWeek).ToList(), multiWeekTracking, effectiveAdvanceDays, ct);
 
         // Process each day in the advance window
         for (int dayOffset = 0; dayOffset <= effectiveAdvanceDays; dayOffset++)
@@ -330,7 +329,6 @@ public sealed class WeeklyScheduleService
     private async Task<Dictionary<int, HashSet<DateTime>>> PrecomputeMultiWeekDatesAsync(
         List<ScheduleModel> multiWeekModels,
         Dictionary<int, NextRunStatus> tracking,
-        DateTime windowStartDate,
         int effectiveAdvanceDays,
         CancellationToken ct)
     {
@@ -361,10 +359,7 @@ public sealed class WeeklyScheduleService
                 model, trackingStatus, lastShiftDate, lastHistoryDate);
 
             var validDates = _multiWeekCalc.CalculateValidDates(
-                model,
-                windowStartDate: windowStartDate,
-                restrictionDate: restrictionDate,
-                advanceDays: effectiveAdvanceDays);
+                model, anchorDate, restrictionDate, effectiveAdvanceDays);
 
             result[model.Id] = validDates;
 
