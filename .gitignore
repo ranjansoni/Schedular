@@ -36,8 +36,10 @@ Thumbs.db
 publish/
 publish-api/
 
-# Documentation — keep local only, not on GitHub
+# Documentation — keep local notes private; track reviewed docs/
 *.md
+!docs/
+!docs/*.md
 
 # Snapshot CSVs
 *snapshot*.csv

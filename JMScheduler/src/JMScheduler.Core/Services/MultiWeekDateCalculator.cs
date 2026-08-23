@@ -6,8 +6,8 @@ namespace JMScheduler.Core.Services;
 /// Pure C# replacement for the SpanClientScheduleShift MySQL function (374 lines → ~80 lines).
 ///
 /// For multi-week models (recurringon > 1), this calculates all valid schedule dates
-/// within the advance window by stepping in (recurringon * 7)-day increments from an
-/// anchor date, checking day-of-week flags at each step.
+/// within the advance window by stepping in (recurringon * 7)-day increments from the
+/// model start date, checking day-of-week flags at each step.
 ///
 /// For weekly models (recurringon = 1), every matching day-of-week is valid — no
 /// calculation needed (handled by the caller, not this class).
@@ -28,9 +28,10 @@ public sealed class MultiWeekDateCalculator
     /// cause shifts to be generated in the wrong week of the bi-weekly/tri-weekly pattern.
     /// </summary>
     /// <param name="model">The schedule model with recurringon > 1.</param>
-    /// <param name="anchorDate">
-    /// Used to determine the advance window end point (anchorDate + advanceDays).
-    /// Cycle alignment always uses model.StartDate instead.
+    /// <param name="windowStartDate">
+    /// The scheduler run date. The rolling window ends at windowStartDate + advanceDays.
+    /// This must not be a history/tracking date because those dates can stop advancing
+    /// when no occurrence falls in the current window.
     /// </param>
     /// <param name="restrictionDate">
     /// Only dates AFTER this date are valid.
@@ -42,7 +43,7 @@ public sealed class MultiWeekDateCalculator
     /// <returns>Set of valid schedule dates (date-only) for this model.</returns>
     public HashSet<DateTime> CalculateValidDates(
         ScheduleModel model,
-        DateTime anchorDate,
+        DateTime windowStartDate,
         DateTime restrictionDate,
         int advanceDays)
     {
@@ -56,8 +57,8 @@ public sealed class MultiWeekDateCalculator
         // Always align cycles to model.StartDate — this is the immutable cycle root
         DateTime cycleRoot = model.StartDate.Date;
 
-        // End of the window: cover at least anchorDate + advanceDays + one extra cycle
-        DateTime endDate = anchorDate.Date.AddDays(advanceDays + 7);
+        // The generation horizon rolls forward with every scheduler run.
+        DateTime endDate = windowStartDate.Date.AddDays(advanceDays);
 
         // Jump to the first cycle that could contain dates near the restriction date
         int daysSinceRoot = Math.Max(0, (int)(restrictionDate.Date - cycleRoot).TotalDays);
