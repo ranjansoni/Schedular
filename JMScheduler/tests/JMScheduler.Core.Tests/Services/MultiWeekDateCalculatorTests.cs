@@ -19,8 +19,7 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            anchorDate: new DateTime(2026, 6, 19),
-            restrictionDate: new DateTime(2026, 6, 18),
+            windowStart: new DateTime(2026, 6, 19),
             advanceDays: 45);
 
         Assert.Equal(
@@ -44,8 +43,7 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            anchorDate: new DateTime(2026, 8, 2),
-            restrictionDate: new DateTime(2026, 8, 2),
+            windowStart: new DateTime(2026, 8, 3),
             advanceDays: 45);
 
         Assert.Equal(
@@ -72,8 +70,7 @@ public sealed class MultiWeekDateCalculatorTests
 
         var dates = _calculator.CalculateValidDates(
             model,
-            anchorDate: new DateTime(2026, 7, 1),
-            restrictionDate: new DateTime(2026, 6, 19),
+            windowStart: new DateTime(2026, 7, 1),
             advanceDays: 90);
 
         Assert.Contains(DateTime.Parse(firstExpected), dates);
@@ -95,14 +92,12 @@ public sealed class MultiWeekDateCalculatorTests
 
         var firstRun = _calculator.CalculateValidDates(
             model,
-            anchorDate: new DateTime(2026, 6, 19),
-            restrictionDate: new DateTime(2026, 6, 18),
+            windowStart: new DateTime(2026, 6, 19),
             advanceDays: 45);
 
         var secondRun = _calculator.CalculateValidDates(
             model,
-            anchorDate: firstRun.Max(),
-            restrictionDate: firstRun.Max(),
+            windowStart: new DateTime(2026, 8, 3),
             advanceDays: 45);
 
         Assert.Empty(firstRun.Intersect(secondRun));
@@ -114,6 +109,47 @@ public sealed class MultiWeekDateCalculatorTests
             var daysFromStart = (date.Date - model.StartDate.Date).Days;
             Assert.InRange(daysFromStart % 14, 0, 2);
         });
+    }
+
+    [Theory]
+    [InlineData("2026-08-13")]
+    [InlineData("2026-08-14")]
+    [InlineData("2026-08-15")]
+    public void CalculateValidDates_OneDayIncrementFindsBiweeklyDatesWithoutTracking(
+        string windowStart)
+    {
+        var model = CreateModel(
+            startDate: new DateTime(2026, 6, 19),
+            recurringOn: 2,
+            friday: true,
+            saturday: true,
+            sunday: true);
+
+        var dates = _calculator.CalculateValidDates(
+            model,
+            windowStart: DateTime.Parse(windowStart),
+            advanceDays: 1);
+
+        var expected = DateTime.Parse(windowStart).AddDays(1);
+        Assert.Contains(expected, dates);
+    }
+
+    [Fact]
+    public void CalculateValidDates_OneDayIncrementSkipsOffCycleWeek()
+    {
+        var model = CreateModel(
+            startDate: new DateTime(2026, 6, 19),
+            recurringOn: 2,
+            friday: true,
+            saturday: true,
+            sunday: true);
+
+        var dates = _calculator.CalculateValidDates(
+            model,
+            windowStart: new DateTime(2026, 8, 20),
+            advanceDays: 1);
+
+        Assert.Empty(dates);
     }
 
     private static ScheduleModel CreateModel(

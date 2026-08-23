@@ -69,8 +69,7 @@ For a model with `recurringon = N`:
 3. Day flags select dates within each seven-day cycle.
 4. The scheduler run date starts the rolling generation window.
 5. `AdvanceDays` determines the inclusive end of that window.
-6. The last active shift/history date is only a lower restriction used to avoid
-   regenerating previously handled dates.
+6. Tracking/history dates do not restrict recurrence eligibility.
 7. Database duplicate keys remain the final idempotency guard.
 
 Mutable values such as `lastrundate`, `Nextscheduledate`, and the last generated
@@ -111,14 +110,16 @@ Sunday inside a selected cycle, subsequent runs shifted the biweekly phase.
 For the reported model, later runs could produce dates such as August 7-8
 instead of August 14-15.
 
-Commit `dfac369` corrected this by always deriving cycle boundaries from
-`model.StartDate`. Tracking/history dates still restrict dates already handled,
-but they no longer redefine which week is active. The batch and single-model
-paths both use this corrected calculator.
+Commit `dfac369` corrected this by deriving cycle boundaries from
+`model.StartDate`, but the calculator still ended its search window relative to
+a mutable tracking/history anchor. With `AdvanceDays = 1`, a stale
+`Nextscheduledate` could leave the entire search window behind the last shift,
+so every later incremental run returned no dates.
 
-The current source therefore already contains the production correction for the
-reported defect. This investigation adds regression coverage and deployment
-documentation; it does not introduce another recurrence algorithm change.
+The calculator now evaluates only the requested processing window and derives
+each candidate's cycle directly from `model.StartDate`. Batch and single-model
+paths use the same logic. Tracking remains operational metadata, while existing
+duplicate detection prevents repeat shifts.
 
 No database schema or stored-procedure change is required for this fix.
 
@@ -130,6 +131,7 @@ The `JMScheduler.Core.Tests` project covers:
 - The next rolling window after the original 45-day horizon.
 - Three-week and four-week cycle alignment.
 - Repeated-run non-overlap and no phase drift.
+- Incremental one-day generation with no tracking dependency.
 - Rejection of dates in the alternate, incorrect weeks.
 
 ## Known parity gap outside this fix
@@ -138,9 +140,9 @@ The original `SpanClientScheduleShift` function inserted generated cycle dates
 into `job_clientschedulefunctiondataHistory`. The C# service reads and prunes
 that table but does not add rows.
 
-This does not break the reported normal biweekly rollover because cycle
-alignment now uses `StartDate` and tracking falls back to
-`Nextscheduledate`. It can affect edit/reset behavior because
+This does not break normal multi-week rollover because recurrence eligibility
+uses `StartDate` and the requested processing window. It can affect edit/reset
+behavior because
 `CleanupService.ResetEditedModelAnchorsAsync` still consults history.
 
 That issue should be investigated separately with an edit/reset reproduction.

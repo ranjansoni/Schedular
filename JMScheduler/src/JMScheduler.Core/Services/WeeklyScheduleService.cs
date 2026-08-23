@@ -104,7 +104,7 @@ public sealed class WeeklyScheduleService
 
         // Pre-compute multi-week valid dates for all multi-week models (in-memory)
         var multiWeekValidDates = await PrecomputeMultiWeekDatesAsync(
-            models.Where(m => m.IsMultiWeek).ToList(), multiWeekTracking, effectiveAdvanceDays, ct);
+            models.Where(m => m.IsMultiWeek).ToList(), scheduleDateTime, effectiveAdvanceDays, ct);
 
         // Process each day in the advance window
         for (int dayOffset = 0; dayOffset <= effectiveAdvanceDays; dayOffset++)
@@ -323,53 +323,36 @@ public sealed class WeeklyScheduleService
     /// Pre-compute valid schedule dates for all multi-week models.
     /// Replaces hundreds of thousands of SpanClientScheduleShift DB calls with pure C# math.
     ///
-    /// Optimization: uses 2 bulk queries to fetch last shift dates and last history dates
-    /// for ALL multi-week models at once, instead of 2 queries per model (562 → 2 queries).
+    /// Dates are derived directly from each model's immutable start date and the requested
+    /// processing window. Tracking/history state cannot truncate incremental runs.
     /// </summary>
-    private async Task<Dictionary<int, HashSet<DateTime>>> PrecomputeMultiWeekDatesAsync(
+    private Task<Dictionary<int, HashSet<DateTime>>> PrecomputeMultiWeekDatesAsync(
         List<ScheduleModel> multiWeekModels,
-        Dictionary<int, NextRunStatus> tracking,
+        DateTime windowStart,
         int effectiveAdvanceDays,
         CancellationToken ct)
     {
         var result = new Dictionary<int, HashSet<DateTime>>();
 
-        if (multiWeekModels.Count == 0) return result;
+        if (multiWeekModels.Count == 0)
+            return Task.FromResult(result);
 
-        _logger.LogInformation("Pre-computing multi-week dates for {Count} models (bulk query)", multiWeekModels.Count);
+        ct.ThrowIfCancellationRequested();
+        _logger.LogInformation("Pre-computing multi-week dates for {Count} models", multiWeekModels.Count);
 
-        // Bulk fetch: 2 queries instead of 2*N queries
-        var modelIds = multiWeekModels.Select(m => m.Id).ToList();
-        var lastShiftDates = await _repo.GetLastShiftDatesForModelsAsync(modelIds, ct);
-        var lastHistoryDates = await _repo.GetLastHistoryDatesForModelsAsync(modelIds, ct);
-
-        _logger.LogInformation(
-            "Bulk loaded multi-week data: {ShiftDates} shift dates, {HistoryDates} history dates",
-            lastShiftDates.Count, lastHistoryDates.Count);
-
-        // Now compute valid dates in-memory (no more DB calls)
         foreach (var model in multiWeekModels)
         {
-            tracking.TryGetValue(model.Id, out var trackingStatus);
-
-            DateTime? lastShiftDate = lastShiftDates.TryGetValue(model.Id, out var sd) ? sd : null;
-            DateTime? lastHistoryDate = lastHistoryDates.TryGetValue(model.Id, out var hd) ? hd : null;
-
-            var (anchorDate, restrictionDate) = _multiWeekCalc.ResolveAnchorAndRestriction(
-                model, trackingStatus, lastShiftDate, lastHistoryDate);
-
             var validDates = _multiWeekCalc.CalculateValidDates(
-                model, anchorDate, restrictionDate, effectiveAdvanceDays);
+                model, windowStart, effectiveAdvanceDays);
 
             result[model.Id] = validDates;
 
             _logger.LogDebug(
-                "Multi-week model {ModelId}: anchor={Anchor:yyyy-MM-dd}, restriction={Restriction:yyyy-MM-dd}, " +
-                "validDates={Count}",
-                model.Id, anchorDate, restrictionDate, validDates.Count);
+                "Multi-week model {ModelId}: window={Start:yyyy-MM-dd}..{End:yyyy-MM-dd}, validDates={Count}",
+                model.Id, windowStart.Date, windowStart.Date.AddDays(effectiveAdvanceDays), validDates.Count);
         }
 
-        return result;
+        return Task.FromResult(result);
     }
 
     /// <summary>

@@ -6,8 +6,8 @@ namespace JMScheduler.Core.Services;
 /// Pure C# replacement for the SpanClientScheduleShift MySQL function (374 lines → ~80 lines).
 ///
 /// For multi-week models (recurringon > 1), this calculates all valid schedule dates
-/// within the advance window by stepping in (recurringon * 7)-day increments from an
-/// anchor date, checking day-of-week flags at each step.
+/// in the requested processing window. Recurrence cycles are anchored only to the
+/// model start date, so stale tracking data cannot prevent incremental runs.
 ///
 /// For weekly models (recurringon = 1), every matching day-of-week is valid — no
 /// calculation needed (handled by the caller, not this class).
@@ -20,65 +20,44 @@ namespace JMScheduler.Core.Services;
 public sealed class MultiWeekDateCalculator
 {
     /// <summary>
-    /// Calculate all valid schedule dates for a multi-week model within the given advance window.
+    /// Calculate all valid schedule dates for a multi-week model within the processing window.
     /// Returns a HashSet of dates (date-only, no time component) that should have shifts created.
     ///
-    /// Cycles are always aligned to model.StartDate to prevent drift. Previous versions used
-    /// anchorDate (last shift/tracking date) as the cycle root, which could be mid-cycle and
-    /// cause shifts to be generated in the wrong week of the bi-weekly/tri-weekly pattern.
+    /// Eligibility is derived solely from model.StartDate, RecurringOn, and weekday flags.
+    /// Tracking/history remains useful for operational state, but is not recurrence input.
     /// </summary>
     /// <param name="model">The schedule model with recurringon > 1.</param>
-    /// <param name="anchorDate">
-    /// Used to determine the advance window end point (anchorDate + advanceDays).
-    /// Cycle alignment always uses model.StartDate instead.
-    /// </param>
-    /// <param name="restrictionDate">
-    /// Only dates AFTER this date are valid.
-    /// For normal mode: the last existing shift's datetimein date.
-    /// For edit mode (ModalEditmode > 0): DateTime.Now (regenerate from today).
-    /// For first-time models: DateTime.Now.AddDays(-1).
-    /// </param>
+    /// <param name="windowStart">First date included in this scheduler run.</param>
     /// <param name="advanceDays">Number of days in the advance window.</param>
     /// <returns>Set of valid schedule dates (date-only) for this model.</returns>
     public HashSet<DateTime> CalculateValidDates(
         ScheduleModel model,
-        DateTime anchorDate,
-        DateTime restrictionDate,
+        DateTime windowStart,
         int advanceDays)
     {
         var validDates = new HashSet<DateTime>();
 
-        if (model.RecurringOn <= 1)
+        if (model.RecurringOn <= 1 || advanceDays < 0)
             return validDates;
 
-        int daysPerCycle = 7 * model.RecurringOn;
-
-        // Always align cycles to model.StartDate — this is the immutable cycle root
         DateTime cycleRoot = model.StartDate.Date;
+        DateTime firstDate = windowStart.Date;
+        DateTime lastDate = firstDate.AddDays(advanceDays);
 
-        // End of the window: cover at least anchorDate + advanceDays + one extra cycle
-        DateTime endDate = anchorDate.Date.AddDays(advanceDays + 7);
-
-        // Jump to the first cycle that could contain dates near the restriction date
-        int daysSinceRoot = Math.Max(0, (int)(restrictionDate.Date - cycleRoot).TotalDays);
-        int completedCycles = daysSinceRoot / daysPerCycle;
-        int startCycle = Math.Max(0, completedCycles - 1);
-        DateTime firstCycleStart = cycleRoot.AddDays(startCycle * daysPerCycle);
-
-        for (var weekStart = firstCycleStart; weekStart <= endDate; weekStart = weekStart.AddDays(daysPerCycle))
+        for (DateTime candidateDate = firstDate;
+             candidateDate <= lastDate;
+             candidateDate = candidateDate.AddDays(1))
         {
-            for (int dayOffset = 0; dayOffset < 7; dayOffset++)
-            {
-                DateTime candidateDate = weekStart.AddDays(dayOffset);
+            int daysFromStart = (candidateDate - cycleRoot).Days;
+            if (daysFromStart < 0)
+                continue;
 
-                if (!model.IsScheduledForDay(candidateDate.DayOfWeek))
-                    continue;
+            int weekFromStart = daysFromStart / 7;
+            if (weekFromStart % model.RecurringOn != 0)
+                continue;
 
-                if (candidateDate.Date > restrictionDate.Date)
-                {
-                    validDates.Add(candidateDate.Date);
-                }
-            }
+            if (model.IsScheduledForDay(candidateDate.DayOfWeek))
+                validDates.Add(candidateDate);
         }
 
         return validDates;

@@ -165,19 +165,8 @@ public sealed class SchedulerJob
                 HashSet<DateTime>? multiWeekValidDates = null;
                 if (model.IsMultiWeek)
                 {
-                    var ids = new List<int> { modelId };
-                    var lastShiftDates = await _repo.GetLastShiftDatesForModelsAsync(ids, ct);
-                    var lastHistoryDates = await _repo.GetLastHistoryDatesForModelsAsync(ids, ct);
-                    var tracking = await _repo.LoadMultiWeekTrackingAsync(ct);
-                    tracking.TryGetValue(modelId, out var trackStatus);
-
-                    DateTime? lastShift = lastShiftDates.TryGetValue(modelId, out var sd) ? sd : null;
-                    DateTime? lastHistory = lastHistoryDates.TryGetValue(modelId, out var hd) ? hd : null;
-
-                    var (anchor, restriction) = _multiWeekCalc.ResolveAnchorAndRestriction(
-                        model, trackStatus, lastShift, lastHistory);
                     multiWeekValidDates = _multiWeekCalc.CalculateValidDates(
-                        model, anchor, restriction, effectiveAdvanceDays);
+                        model, now.Date, effectiveAdvanceDays);
 
                     _logger.LogInformation("Multi-week model: {Count} valid dates computed", multiWeekValidDates.Count);
                 }
